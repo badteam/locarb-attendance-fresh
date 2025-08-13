@@ -1,0 +1,9 @@
+{
+  "name": "LoCarb Attendance",
+  "short_name": "LoCarb",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ff8a00",
+  "description": "Attendance for LoCarb"
+}
