@@ -5,6 +5,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'firebase_options.dart';
 import 'services/auth_service.dart';
 import 'services/db_init.dart';
+import 'screens/admin_users_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -21,6 +22,7 @@ class LoCarbApp extends StatelessWidget {
       title: 'LoCarb Attendance',
       theme: ThemeData(colorSchemeSeed: const Color(0xFFFF8A00), useMaterial3: true),
       routes: {
+        '/admin/users': (_) => const AdminUsersScreen(),
         '/login': (_) => const LoginScreen(),
         '/signup': (_) => const SignUpScreen(),
         '/home': (_) => const HomeScreen(),
@@ -276,19 +278,55 @@ class PendingScreen extends StatelessWidget {
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
+
+  Future<bool> _isAdmin() async {
+    final uid = FirebaseAuth.instance.currentUser!.uid;
+    final snap = await FirebaseFirestore.instance.doc('users/$uid').get();
+    return (snap.data()?['role'] ?? '') == 'admin';
+  }
+
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
-    return Scaffold(
-      appBar: AppBar(title: const Text('الرئيسية'), actions: [
-        IconButton(onPressed: () async {
-          await AuthService.signOut();
-          if (context.mounted) Navigator.pushReplacementNamed(context, '/login');
-        }, icon: const Icon(Icons.logout))
-      ]),
-      body: Center(
-        child: Text('أهلًا ${user?.email ?? ''}', textDirection: TextDirection.rtl),
-      ),
+
+    return FutureBuilder<bool>(
+      future: _isAdmin(),
+      builder: (context, snap) {
+        final admin = snap.data == true;
+        return Scaffold(
+          appBar: AppBar(
+            title: const Text('الرئيسية'),
+            actions: [
+              if (admin)
+                IconButton(
+                  tooltip: 'لوحة الأدمن',
+                  onPressed: () => Navigator.pushNamed(context, '/admin/users'),
+                  icon: const Icon(Icons.admin_panel_settings),
+                ),
+              IconButton(
+                onPressed: () async {
+                  await AuthService.signOut();
+                  if (context.mounted) {
+                    Navigator.pushReplacementNamed(context, '/login');
+                  }
+                },
+                icon: const Icon(Icons.logout),
+              ),
+            ],
+          ),
+          body: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('أهلًا ${user?.email ?? ''}', textDirection: TextDirection.rtl),
+                const SizedBox(height: 12),
+                if (admin) const Text('وضعك: أدمن', style: TextStyle(fontWeight: FontWeight.bold)),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }
+
