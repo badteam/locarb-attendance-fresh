@@ -2,10 +2,10 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 /// Attendance Reports (English)
-/// - Date range filter + optional branch filter
+/// - Date range filter + optional branch & shift filter (branch/shift filtered on client)
 /// - Grouped by day
-/// - Shows employee name, avatar, branch name and time
-/// - Branch filter is applied on the client to avoid composite index for now
+/// - Shows employee name, avatar, branch name, shift name and time
+/// - Highlights entries made from a branch different than user's assigned branch (at that time)
 class AttendanceReportScreen extends StatefulWidget {
   const AttendanceReportScreen({super.key});
 
@@ -17,11 +17,14 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   DateTime _from = DateTime.now().subtract(const Duration(days: 7));
   DateTime _to = DateTime.now();
   String? _branchId;
+  String? _shiftId;
 
   // Simple caches to avoid repeated reads
   final Map<String, String> _userNameCache = {};
   final Map<String, String> _userAvatarCache = {};
+  final Map<String, String> _userAssignedBranchCache = {};
   final Map<String, String> _branchNameCache = {};
+  final Map<String, String> _shiftNameCache = {};
 
   // Date pickers
   Future<void> _pickFrom() async {
@@ -56,25 +59,32 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     return '$hh:$mm';
   }
 
-  // Fetch user display info (name + avatarUrl)
-  Future<(String name, String avatarUrl)> _userInfo(String uid) async {
-    if (_userNameCache.containsKey(uid) || _userAvatarCache.containsKey(uid)) {
-      return (_userNameCache[uid] ?? uid, _userAvatarCache[uid] ?? '');
+  // Fetch user display info (name + avatarUrl + assignedBranch at the moment)
+  Future<(String name, String avatarUrl, String assignedBranchId)> _userInfo(String uid) async {
+    String name, avatar, assignedBranch;
+    if (_userNameCache.containsKey(uid)) {
+      name = _userNameCache[uid]!;
+      avatar = _userAvatarCache[uid] ?? '';
+      assignedBranch = _userAssignedBranchCache[uid] ?? '';
+      return (name, avatar, assignedBranch);
     }
     try {
       final s = await FirebaseFirestore.instance.doc('users/$uid').get();
       final m = s.data() ?? {};
       final full = (m['fullName'] ?? '').toString();
       final uname = (m['username'] ?? '').toString();
-      final name = full.isNotEmpty ? full : (uname.isNotEmpty ? uname : uid);
-      final avatar = (m['avatarUrl'] ?? '').toString();
+      name = full.isNotEmpty ? full : (uname.isNotEmpty ? uname : uid);
+      avatar = (m['avatarUrl'] ?? '').toString();
+      assignedBranch = (m['branchId'] ?? '').toString();
       _userNameCache[uid] = name;
       _userAvatarCache[uid] = avatar;
-      return (name, avatar);
+      _userAssignedBranchCache[uid] = assignedBranch;
+      return (name, avatar, assignedBranch);
     } catch (_) {
       _userNameCache[uid] = uid;
       _userAvatarCache[uid] = '';
-      return (uid, '');
+      _userAssignedBranchCache[uid] = '';
+      return (uid, '', '');
     }
   }
 
@@ -94,6 +104,22 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     }
   }
 
+  // Fetch shift name
+  Future<String> _shiftName(String id) async {
+    if (id.isEmpty) return 'Unassigned';
+    if (_shiftNameCache.containsKey(id)) return _shiftNameCache[id]!;
+    try {
+      final s = await FirebaseFirestore.instance.doc('shifts/$id').get();
+      final m = s.data() ?? {};
+      final name = (m['name'] ?? id).toString();
+      _shiftNameCache[id] = name;
+      return name;
+    } catch (_) {
+      _shiftNameCache[id] = id;
+      return id;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     // Query by date range only; order by the same field to avoid composite index
@@ -105,6 +131,8 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
 
     final branchesRef =
         FirebaseFirestore.instance.collection('branches').orderBy('name');
+    final shiftsRef =
+        FirebaseFirestore.instance.collection('shifts').orderBy('name');
 
     return Scaffold(
       body: Column(
@@ -128,6 +156,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                   label: 'To: ${_fmtDay(_to)}',
                   onTap: _pickTo,
                 ),
+                // Branch dropdown
                 StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                   stream: branchesRef.snapshots(),
                   builder: (context, snap) {
@@ -157,6 +186,36 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                     );
                   },
                 ),
+                // Shift dropdown
+                StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                  stream: shiftsRef.snapshots(),
+                  builder: (context, snap) {
+                    final items = <DropdownMenuItem<String>>[
+                      const DropdownMenuItem(value: '', child: Text('All shifts')),
+                    ];
+                    if (snap.hasData) {
+                      for (final d in snap.data!.docs) {
+                        final name = (d.data()['name'] ?? d.id).toString();
+                        items.add(DropdownMenuItem(value: d.id, child: Text(name)));
+                      }
+                    }
+                    return InputDecorator(
+                      decoration: const InputDecoration(
+                        labelText: 'Shift',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<String>(
+                          value: _shiftId ?? '',
+                          items: items,
+                          onChanged: (v) =>
+                              setState(() => _shiftId = (v ?? '').isEmpty ? null : v),
+                        ),
+                      ),
+                    );
+                  },
+                ),
               ],
             ),
           ),
@@ -176,11 +235,17 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
 
                 var docs = snap.data?.docs ?? [];
 
-                // Client-side branch filter (no composite index needed)
+                // Client-side filters (to avoid composite index for now)
                 if (_branchId != null && _branchId!.isNotEmpty) {
                   docs = docs
                       .where((d) =>
                           (d.data()['branchId'] ?? '').toString() == _branchId)
+                      .toList();
+                }
+                if (_shiftId != null && _shiftId!.isNotEmpty) {
+                  docs = docs
+                      .where((d) =>
+                          (d.data()['shiftId'] ?? '').toString() == _shiftId)
                       .toList();
                 }
 
@@ -231,6 +296,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                       items: items,
                       userInfoOf: _userInfo,
                       branchNameOf: _branchName,
+                      shiftNameOf: _shiftName,
                       fmtTime: _fmtTime,
                     );
                   },
@@ -248,8 +314,9 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
 class _DaySection extends StatelessWidget {
   final String day;
   final List<QueryDocumentSnapshot<Map<String, dynamic>>> items;
-  final Future<(String name, String avatarUrl)> Function(String uid) userInfoOf;
+  final Future<(String name, String avatarUrl, String assignedBranchId)> Function(String uid) userInfoOf;
   final Future<String> Function(String branchId) branchNameOf;
+  final Future<String> Function(String shiftId) shiftNameOf;
   final String Function(Timestamp? ts) fmtTime;
 
   const _DaySection({
@@ -257,6 +324,7 @@ class _DaySection extends StatelessWidget {
     required this.items,
     required this.userInfoOf,
     required this.branchNameOf,
+    required this.shiftNameOf,
     required this.fmtTime,
   });
 
@@ -267,39 +335,64 @@ class _DaySection extends StatelessWidget {
       children: [
         Padding(
           padding: const EdgeInsets.only(top: 12, bottom: 6),
-          child:
-              Text('Date: $day', style: Theme.of(context).textTheme.titleMedium),
+          child: Text('Date: $day', style: Theme.of(context).textTheme.titleMedium),
         ),
         ...items.map((d) {
           final m = d.data();
           final uid = (m['userId'] ?? '').toString();
           final typ = (m['type'] ?? '').toString(); // in / out
           final branchId = (m['branchId'] ?? '').toString();
+          final shiftId = (m['shiftId'] ?? '').toString();
           final lat = (m['lat'] ?? 0).toString();
           final lng = (m['lng'] ?? 0).toString();
           final at = m['at'] is Timestamp ? (m['at'] as Timestamp) : null;
 
-          return FutureBuilder<(String name, String avatarUrl)>(
+          return FutureBuilder<(String name, String avatarUrl, String assignedBranchId)>(
             future: userInfoOf(uid),
             builder: (context, userSnap) {
               final name = (userSnap.data?.$1 ?? uid);
               final avatarUrl = (userSnap.data?.$2 ?? '');
-              return FutureBuilder<String>(
-                future: branchNameOf(branchId),
-                builder: (context, brSnap) {
-                  final branchName = (brSnap.data ?? branchId);
+              final assignedBranchId = (userSnap.data?.$3 ?? '');
+
+              return FutureBuilder<List<String>>(
+                future: Future.wait([
+                  branchNameOf(branchId),
+                  shiftNameOf(shiftId),
+                ]),
+                builder: (context, infoSnap) {
+                  final branchName = (infoSnap.data?.elementAtOrNull(0) ?? branchId);
+                  final shiftName = (infoSnap.data?.elementAtOrNull(1) ?? 'Unassigned');
+
+                  final usedDifferentBranch =
+                      assignedBranchId.isNotEmpty &&
+                      branchId.isNotEmpty &&
+                      assignedBranchId != branchId;
 
                   return Card(
                     margin: const EdgeInsets.only(bottom: 8),
                     elevation: 1.5,
                     child: ListTile(
                       leading: _Avatar(avatarUrl: avatarUrl, name: name, typ: typ),
-                      title: Text(name),
+                      title: Row(
+                        children: [
+                          Expanded(child: Text(name)),
+                          const SizedBox(width: 8),
+                          if (usedDifferentBranch)
+                            Chip(
+                              label: const Text(
+                                'Other branch',
+                                style: TextStyle(color: Colors.white),
+                              ),
+                              backgroundColor: Colors.indigo,
+                              visualDensity: VisualDensity.compact,
+                            ),
+                        ],
+                      ),
                       subtitle: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           const SizedBox(height: 2),
-                          Text('Branch: $branchName • Time: ${fmtTime(at)}'),
+                          Text('Branch: $branchName • Shift: $shiftName • Time: ${fmtTime(at)}'),
                           Text(
                             '($lat, $lng)',
                             style: const TextStyle(fontSize: 12, color: Colors.black54),
@@ -394,4 +487,9 @@ class _ErrorBox extends StatelessWidget {
       ),
     );
   }
+}
+
+// Small helper for null-safe elementAt
+extension<T> on List<T> {
+  T? elementAtOrNull(int index) => (index >= 0 && index < length) ? this[index] : null;
 }
