@@ -4,12 +4,12 @@ publish_to: "none"
 version: 0.1.0+1
 
 environment:
-  sdk: ">=3.2.0 <4.0.0"
+  sdk: ">=3.4.0 <4.0.0"   # Flutter 3.22 يستخدم Dart 3.4
 
 dependencies:
   flutter:
     sdk: flutter
-  # نسخ متوافقة سحابيًا (CI) مع Flutter 3.22
+  # نسخ متوافقة مع Flutter 3.22 على GitHub Actions
   firebase_core: 2.31.1
   firebase_auth: 4.19.6
   cloud_firestore: 4.17.5
@@ -18,6 +18,10 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: 3.0.2
+
+# حل تعارض الويب (firebase_* تحتاج js 0.6.7)
+dependency_overrides:
+  js: 0.6.7
 
 flutter:
   uses-material-design: true
