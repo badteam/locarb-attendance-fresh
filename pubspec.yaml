@@ -26,6 +26,4 @@ flutter:
   firebase_core: 2.31.1
   firebase_auth: 4.19.6
   cloud_firestore: 4.17.5
-dependency_overrides:
-  js: 0.6.7
 
