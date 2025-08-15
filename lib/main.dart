@@ -33,7 +33,7 @@ class OnboardingScreen extends StatelessWidget {
         child: Column(mainAxisSize: MainAxisSize.min, children: const [
           Icon(Icons.verified_user, size: 96),
           SizedBox(height: 16),
-          Text('مرحبًا بك في LoCarb Attendance',
+          Text('مرحبًا بك في LoCarb Attendance 2',
               textDirection: TextDirection.rtl, textAlign: TextAlign.center),
           SizedBox(height: 8),
           Text('نسخة البداية — هنكمل الصفحات لاحقًا',
