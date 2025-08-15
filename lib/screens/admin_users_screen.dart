@@ -16,6 +16,25 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
   String _query = '';
   static const int _limit = 200;
 
+  // simple cache for shift names
+  final Map<String, String> _shiftNameCache = {};
+
+  Future<String> _shiftName(String? shiftId) async {
+    final id = (shiftId ?? '').trim();
+    if (id.isEmpty) return 'Unassigned';
+    if (_shiftNameCache.containsKey(id)) return _shiftNameCache[id]!;
+    try {
+      final s = await FirebaseFirestore.instance.doc('shifts/$id').get();
+      final m = s.data() ?? {};
+      final name = (m['name'] ?? 'Unassigned').toString();
+      _shiftNameCache[id] = name;
+      return name;
+    } catch (_) {
+      _shiftNameCache[id] = 'Unassigned';
+      return 'Unassigned';
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final usersCol = FirebaseFirestore.instance.collection('users');
@@ -122,17 +141,26 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                     final role  = (m['role'] ?? 'employee').toString();
                     final status= (m['status'] ?? 'pending').toString();
                     final branchName = (m['branchName'] ?? 'Unassigned').toString();
+                    final shiftId = (m['shiftId'] ?? '').toString();
 
-                    return ListTile(
-                      leading: CircleAvatar(
-                        child: Text(uname.isNotEmpty ? uname[0].toUpperCase() : '?'),
-                      ),
-                      title: Text(full.isNotEmpty ? full : uname),
-                      subtitle: Text('Role: $role • Status: $status • Branch: $branchName\n$email'),
-                      isThreeLine: true,
-                      trailing: _Actions(uid: uid, role: role, status: status),
-                      onTap: () => _openAssignBranch(context, uid),
-                      onLongPress: () => _openAssignShift(context, uid), // ⬅️ quick access
+                    return FutureBuilder<String>(
+                      future: _shiftName(shiftId),
+                      builder: (context, shiftSnap) {
+                        final shiftName = shiftSnap.data ?? 'Unassigned';
+                        return ListTile(
+                          leading: CircleAvatar(
+                            child: Text(uname.isNotEmpty ? uname[0].toUpperCase() : '?'),
+                          ),
+                          title: Text(full.isNotEmpty ? full : uname),
+                          subtitle: Text(
+                            'Role: $role • Status: $status\nBranch: $branchName • Shift: $shiftName\n$email',
+                          ),
+                          isThreeLine: true,
+                          trailing: _Actions(uid: uid, role: role, status: status),
+                          onTap: () => _openAssignBranch(context, uid),
+                          onLongPress: () => _openAssignShift(context, uid),
+                        );
+                      },
                     );
                   },
                 );
@@ -140,7 +168,8 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
             ),
           ),
           const SizedBox(height: 8),
-          const Text('* Showing first 200 users — add pagination later if needed.', style: TextStyle(fontSize: 12, color: Colors.black54)),
+          const Text('* Showing first 200 users — add pagination later if needed.',
+              style: TextStyle(fontSize: 12, color: Colors.black54)),
           const SizedBox(height: 8),
         ],
       ),
@@ -279,13 +308,14 @@ class _ActionsState extends State<_Actions> {
             onPressed: () => _run(() => AdminService.makeEmployee(widget.uid)),
             child: const Text('Make Employee'),
           ),
-        // زر ربط وردية سريع
         OutlinedButton(
-          onPressed: () async {
-            // افتح نافذة اختيار الوردية
-            Navigator.of(context).pop(); // يقفل Snackbar تسبق الضغط
+          onPressed: () {
+            // Hint button (actual assignment via long-press on tile)
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Long-press the user row to assign a shift')),
+            );
           },
-          child: const Text('Assign Shift (long-press card)'),
+          child: const Text('Assign Shift (hint)'),
         ),
       ],
     );
