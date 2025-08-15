@@ -6,9 +6,9 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'firebase_options.dart';
 import 'services/auth_service.dart';
 import 'services/db_init.dart';
-import 'screens/admin_users_screen.dart';
-import 'screens/admin_dashboard.dart';
 import 'services/attendance_service.dart';
+
+import 'screens/admin_dashboard.dart'; // لوحة الأدمن (تبويبات: المستخدمون + الفروع)
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -28,12 +28,11 @@ class LoCarbApp extends StatelessWidget {
         useMaterial3: true,
       ),
       routes: {
-        '/login': (_) => const LoginScreen(),
-        '/signup': (_) => const SignUpScreen(),
-        '/home': (_) => const HomeScreen(),
+        '/login'  : (_) => const LoginScreen(),
+        '/signup' : (_) => const SignUpScreen(),
+        '/home'   : (_) => const HomeScreen(),
         '/pending': (_) => const PendingScreen(),
-        '/admin/users': (_) => const AdminUsersScreen(),
-        '/admin': (_) => const AdminDashboard(),
+        '/admin'  : (_) => const AdminDashboard(),
       },
       home: const RootRouter(),
       debugShowCheckedModeBanner: false,
@@ -41,7 +40,7 @@ class LoCarbApp extends StatelessWidget {
   }
 }
 
-/// يوجه حسب حالة المصادقة، ثم يشغل تهيئة قاعدة البيانات عند أول دخول
+/// يوجّه حسب حالة المصادقة ثم يشغّل تهيئة قاعدة البيانات
 class RootRouter extends StatelessWidget {
   const RootRouter({super.key});
   @override
@@ -60,7 +59,7 @@ class RootRouter extends StatelessWidget {
   }
 }
 
-/// يشغّل تهيئة الداتابيز (إنشاء المجموعات الأساسية) ثم يوجّه حسب حالة المستخدم
+/// يشغّل التهيئة (إنشاء المجموعات الأساسية) ثم يوجّه حسب حالة الحساب
 class InitGate extends StatefulWidget {
   final User user;
   const InitGate({super.key, required this.user});
@@ -81,9 +80,10 @@ class _InitGateState extends State<InitGate> {
 
   Future<void> _bootstrap() async {
     try {
-      // تأكيد مستند المستخدم (إن لم يكن موجودًا)
       final email = widget.user.email ?? '';
       final username = email.isNotEmpty ? email.split('@').first : widget.user.uid;
+
+      // 1) تأكيد مستند المستخدم لو مش موجود
       await DBInit.ensureCurrentUserDoc(
         uid: widget.user.uid,
         username: username,
@@ -91,7 +91,7 @@ class _InitGateState extends State<InitGate> {
         fullName: '',
       );
 
-      // إنشاء المجموعات الأساسية لو فاضية (companies/branches/shifts/…)
+      // 2) إنشاء الكوليكشنز الأساسية لو فاضية
       await DBInit.ensureBaseCollections();
 
       if (mounted) setState(() => _done = true);
@@ -109,7 +109,7 @@ class _InitGateState extends State<InitGate> {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
-    // بعد التهيئة: حمّل بيانات المستخدم وحدد وجهته
+    // بعد التهيئة: حمّل حالة المستخدم
     return FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
       future: FirebaseFirestore.instance.doc('users/${widget.user.uid}').get(),
       builder: (context, snap) {
@@ -158,8 +158,7 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   final username = TextEditingController();
   final password = TextEditingController();
-  String? error;
-  bool loading = false;
+  String? error; bool loading = false;
 
   Future<void> _login() async {
     setState(() { loading = true; error = null; });
@@ -177,11 +176,7 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   @override
-  void dispose() {
-    username.dispose();
-    password.dispose();
-    super.dispose();
-  }
+  void dispose() { username.dispose(); password.dispose(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {
@@ -197,19 +192,13 @@ class _LoginScreenState extends State<LoginScreen> {
               const SizedBox(height: 8),
               TextField(controller: password, decoration: const InputDecoration(labelText: 'كلمة المرور'), obscureText: true),
               const SizedBox(height: 12),
-              FilledButton(
-                onPressed: loading ? null : _login,
-                child: loading ? const CircularProgressIndicator() : const Text('دخول'),
-              ),
-              TextButton(
-                onPressed: () => Navigator.pushNamed(context, '/signup'),
-                child: const Text('إنشاء حساب جديد'),
-              ),
-              if (error != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: Text(error!, style: const TextStyle(color: Colors.red)),
-                ),
+              FilledButton(onPressed: loading? null : _login,
+                child: loading? const CircularProgressIndicator() : const Text('دخول')),
+              TextButton(onPressed: ()=> Navigator.pushNamed(context, '/signup'),
+                child: const Text('إنشاء حساب جديد')),
+              if (error != null) Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(error!, style: const TextStyle(color: Colors.red))),
             ]),
           ),
         ),
@@ -227,17 +216,14 @@ class _SignUpScreenState extends State<SignUpScreen> {
   final username = TextEditingController();
   final password = TextEditingController();
   final fullName = TextEditingController();
-  String? error;
-  bool loading = false;
+  String? error; bool loading = false;
 
   Future<void> _signup() async {
     setState(() { loading = true; error = null; });
     try {
-      // إنشاء الحساب (نحول اليوزرنيم لإيميل داخلي عند AuthService)
       final cred = await AuthService.signUp(username.text, password.text);
       final uid = cred.user!.uid;
 
-      // إنشاء مستند المستخدم مباشرة كموظف Pending (بدون أي استعلامات)
       await FirebaseFirestore.instance.doc('users/$uid').set({
         'uid': uid,
         'username': username.text.trim(),
@@ -263,12 +249,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
   }
 
   @override
-  void dispose() {
-    username.dispose();
-    password.dispose();
-    fullName.dispose();
-    super.dispose();
-  }
+  void dispose() { username.dispose(); password.dispose(); fullName.dispose(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {
@@ -286,15 +267,11 @@ class _SignUpScreenState extends State<SignUpScreen> {
               const SizedBox(height: 8),
               TextField(controller: fullName, decoration: const InputDecoration(labelText: 'الاسم الكامل')),
               const SizedBox(height: 12),
-              FilledButton(
-                onPressed: loading ? null : _signup,
-                child: loading ? const CircularProgressIndicator() : const Text('تسجيل'),
-              ),
-              if (error != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: Text(error!, style: const TextStyle(color: Colors.red)),
-                ),
+              FilledButton(onPressed: loading? null : _signup,
+                child: loading? const CircularProgressIndicator() : const Text('تسجيل')),
+              if (error != null) Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(error!, style: const TextStyle(color: Colors.red))),
             ]),
           ),
         ),
@@ -308,9 +285,7 @@ class PendingScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return const Scaffold(
-      body: Center(
-        child: Text('تم إنشاء الحساب، بانتظار موافقة الأدمن', textDirection: TextDirection.rtl),
-      ),
+      body: Center(child: Text('تم إنشاء الحساب، بانتظار موافقة الأدمن', textDirection: TextDirection.rtl)),
     );
   }
 }
@@ -346,7 +321,7 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() { loading = true; message = ''; });
     try {
       await AttendanceService.checkInOut(isCheckIn: isIn);
-      setState(() => message = isIn ? 'تم تسجيل الدخول بنجاح ✅' : 'تم تسجيل الانصراف ✅');
+      setState(() => message = isIn ? 'تم تسجيل الدخول ✅' : 'تم تسجيل الانصراف ✅');
     } catch (e) {
       setState(() => message = 'خطأ: $e');
     } finally {
@@ -371,9 +346,7 @@ class _HomeScreenState extends State<HomeScreen> {
           IconButton(
             onPressed: () async {
               await AuthService.signOut();
-              if (context.mounted) {
-                Navigator.pushReplacementNamed(context, '/login');
-              }
+              if (context.mounted) Navigator.pushReplacementNamed(context, '/login');
             },
             icon: const Icon(Icons.logout),
           ),
@@ -390,31 +363,31 @@ class _HomeScreenState extends State<HomeScreen> {
                 Text('أهلًا ${user?.email ?? ''}', textDirection: TextDirection.rtl),
                 const SizedBox(height: 12),
                 if (status == 'approved') ...[
-                  if (loading) const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 16),
-                    child: CircularProgressIndicator(),
-                  ),
-                  if (!loading) Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      FilledButton(
-                        onPressed: () => _do(true),
-                        child: const Text('Check In'),
-                      ),
-                      const SizedBox(width: 12),
-                      OutlinedButton(
-                        onPressed: () => _do(false),
-                        child: const Text('Check Out'),
-                      ),
-                    ],
-                  ),
+                  if (loading)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 16),
+                      child: CircularProgressIndicator(),
+                    )
+                  else
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        FilledButton(onPressed: () => _do(true), child: const Text('Check In')),
+                        const SizedBox(width: 12),
+                        OutlinedButton(onPressed: () => _do(false), child: const Text('Check Out')),
+                      ],
+                    ),
                 ] else
                   const Text('حسابك بانتظار موافقة الأدمن', textDirection: TextDirection.rtl),
-                if (message.isNotEmpty) Padding(
-                  padding: const EdgeInsets.only(top: 12),
-                  child: Text(message, textAlign: TextAlign.center,
-                      style: TextStyle(color: message.startsWith('خطأ') ? Colors.red : Colors.green)),
-                ),
+                if (message.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: Text(
+                      message,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: message.startsWith('خطأ') ? Colors.red : Colors.green),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -423,4 +396,3 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 }
-
