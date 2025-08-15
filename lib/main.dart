@@ -8,6 +8,7 @@ import 'services/auth_service.dart';
 import 'services/db_init.dart';
 import 'screens/admin_users_screen.dart';
 import 'screens/admin_dashboard.dart';
+import 'services/attendance_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -314,56 +315,112 @@ class PendingScreen extends StatelessWidget {
   }
 }
 
-class HomeScreen extends StatelessWidget {
+class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
 
-  Future<bool> _isAdmin() async {
+class _HomeScreenState extends State<HomeScreen> {
+  bool? isAdmin;
+  String? status;
+  String message = '';
+  bool loading = false;
+
+  Future<void> _loadRole() async {
     final uid = FirebaseAuth.instance.currentUser!.uid;
     final snap = await FirebaseFirestore.instance.doc('users/$uid').get();
-    return (snap.data()?['role'] ?? '') == 'admin';
+    setState(() {
+      isAdmin = (snap.data()?['role'] ?? '') == 'admin';
+      status  = (snap.data()?['status'] ?? 'pending');
+    });
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _loadRole();
+  }
+
+  Future<void> _do(bool isIn) async {
+    setState(() { loading = true; message = ''; });
+    try {
+      await AttendanceService.checkInOut(isCheckIn: isIn);
+      setState(() => message = isIn ? 'تم تسجيل الدخول بنجاح ✅' : 'تم تسجيل الانصراف ✅');
+    } catch (e) {
+      setState(() => message = 'خطأ: $e');
+    } finally {
+      setState(() => loading = false);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
 
-    return FutureBuilder<bool>(
-      future: _isAdmin(),
-      builder: (context, snap) {
-        final isAdmin = snap.data == true;
-        return Scaffold(
-          appBar: AppBar(
-            title: const Text('الرئيسية'),
-            actions: [
-              if (isAdmin)
-                IconButton(
-  tooltip: 'لوحة الأدمن',
-  onPressed: () => Navigator.pushNamed(context, '/admin'),
-  icon: const Icon(Icons.admin_panel_settings),
-),
-              IconButton(
-                onPressed: () async {
-                  await AuthService.signOut();
-                  if (context.mounted) {
-                    Navigator.pushReplacementNamed(context, '/login');
-                  }
-                },
-                icon: const Icon(Icons.logout),
-              ),
-            ],
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('الرئيسية'),
+        actions: [
+          if (isAdmin == true)
+            IconButton(
+              tooltip: 'لوحة الأدمن',
+              onPressed: () => Navigator.pushNamed(context, '/admin'),
+              icon: const Icon(Icons.admin_panel_settings),
+            ),
+          IconButton(
+            onPressed: () async {
+              await AuthService.signOut();
+              if (context.mounted) {
+                Navigator.pushReplacementNamed(context, '/login');
+              }
+            },
+            icon: const Icon(Icons.logout),
           ),
-          body: Center(
+        ],
+      ),
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text('أهلًا ${user?.email ?? ''}', textDirection: TextDirection.rtl),
                 const SizedBox(height: 12),
-                if (isAdmin) const Text('وضعك: أدمن', style: TextStyle(fontWeight: FontWeight.bold)),
+                if (status == 'approved') ...[
+                  if (loading) const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 16),
+                    child: CircularProgressIndicator(),
+                  ),
+                  if (!loading) Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      FilledButton(
+                        onPressed: () => _do(true),
+                        child: const Text('Check In'),
+                      ),
+                      const SizedBox(width: 12),
+                      OutlinedButton(
+                        onPressed: () => _do(false),
+                        child: const Text('Check Out'),
+                      ),
+                    ],
+                  ),
+                ] else
+                  const Text('حسابك بانتظار موافقة الأدمن', textDirection: TextDirection.rtl),
+                if (message.isNotEmpty) Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Text(message, textAlign: TextAlign.center,
+                      style: TextStyle(color: message.startsWith('خطأ') ? Colors.red : Colors.green)),
+                ),
               ],
             ),
           ),
-        );
-      },
+        ),
+      ),
     );
   }
 }
+
