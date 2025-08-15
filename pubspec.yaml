@@ -9,21 +9,18 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  firebase_core: 2.31.1    # ثبّت أرقام النسخ
+  firebase_core: 2.31.1
+  firebase_auth: 4.19.6
+  cloud_firestore: 4.17.5
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: 3.0.2
 
-# مهم لحل تعارضات الويب مع firebase_web
+# Important for resolving web conflicts with firebase_web
 dependency_overrides:
   js: 0.6.7
 
 flutter:
   uses-material-design: true
-  dependencies:
-  firebase_core: 2.31.1
-  firebase_auth: 4.19.6
-  cloud_firestore: 4.17.5
-
