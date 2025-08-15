@@ -32,6 +32,11 @@ jobs:
           test -f web/index.html || (echo "Missing web/index.html" && exit 1)
           echo "Files look OK"
 
+      - name: Clean pub cache (safe)
+        run: |
+         rm -f pubspec.lock || true
+         rm -rf .dart_tool || true
+
       - name: Flutter Pub Get (verbose on failure)
         run: |
           set -e
