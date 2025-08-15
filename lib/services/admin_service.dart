@@ -18,4 +18,12 @@ class AdminService {
   static Future<void> makeEmployee(String uid) {
     return _db.doc('users/$uid').update({'role': 'employee'});
   }
+
+  /// تعيين/تغيير الفرع
+  static Future<void> assignBranch(String uid, String branchId, String branchName) {
+    return _db.doc('users/$uid').update({
+      'branchId': branchId,
+      'branchName': branchName,
+    });
+  }
 }
