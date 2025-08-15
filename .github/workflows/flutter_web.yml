@@ -18,39 +18,27 @@ jobs:
           flutter-version: '3.22.0'
           channel: 'stable'
 
-      - name: Enable web & show versions
+      - name: Enable web (safe)
         run: |
           flutter --version
-          dart --version
           flutter config --enable-web
-          flutter devices
+          flutter doctor -v || true
+          flutter devices || true
 
       - name: Verify project files
         run: |
           test -f pubspec.yaml || (echo "Missing pubspec.yaml" && exit 1)
           test -f lib/main.dart || (echo "Missing lib/main.dart" && exit 1)
           test -f web/index.html || (echo "Missing web/index.html" && exit 1)
-          echo "Files look OK"
-
-      - name: Clean pub cache (safe)
-        run: |
-         rm -f pubspec.lock || true
-         rm -rf .dart_tool || true
 
       - name: Flutter Pub Get (verbose on failure)
         run: |
           set -e
           flutter pub get || (echo "== RETRY VERBOSE ==" && flutter pub get -v)
 
-      # تحليل سريع قبل البناء (يساعد نعرف لو في خطأ كود)
-      - name: Flutter Analyze (ignore failures)
-        run: flutter analyze || true
-
-      # استخدام html renderer أحيانًا يحل مشاكل CI
-      - name: Build Web (verbose)
+      - name: Build Web
         run: flutter build web --release -v --web-renderer html
 
-      # نشر إلى Firebase Hosting (لو عايز نشر تلقائي)
       - name: Deploy to Firebase Hosting
         uses: FirebaseExtended/action-hosting-deploy@v0
         with:
