@@ -145,6 +145,7 @@ class LoginScreen extends StatefulWidget {
   @override
   State<LoginScreen> createState() => _LoginScreenState();
 }
+
 class _LoginScreenState extends State<LoginScreen> {
   final username = TextEditingController();
   final password = TextEditingController();
@@ -196,42 +197,43 @@ class SignUpScreen extends StatefulWidget {
   @override
   State<SignUpScreen> createState() => _SignUpScreenState();
 }
+
 class _SignUpScreenState extends State<SignUpScreen> {
   final username = TextEditingController();
   final password = TextEditingController();
   final fullName = TextEditingController();
   String? error; bool loading = false;
 
-  Future<void> _signup() async {Future<void> _signup() async {
-  setState(() { loading = true; error = null; });
-  try {
-    // إنشاء الحساب
-    final cred = await AuthService.signUp(username.text, password.text);
-    final uid = cred.user!.uid;
+  Future<void> _signup() async {
+    setState(() { loading = true; error = null; });
+    try {
+      // إنشاء الحساب
+      final cred = await AuthService.signUp(username.text, password.text);
+      final uid = cred.user!.uid;
 
-    // بدون أي استعلامات: الحسابات الجديدة = pending + employee
-    await FirebaseFirestore.instance.doc('users/$uid').set({
-      'uid': uid,
-      'username': username.text.trim(),
-      'fullName': fullName.text.trim(),
-      'role': 'employee',
-      'status': 'pending',
-      'createdAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+      // بدون أي استعلامات: الحسابات الجديدة = pending + employee
+      await FirebaseFirestore.instance.doc('users/$uid').set({
+        'uid': uid,
+        'username': username.text.trim(),
+        'fullName': fullName.text.trim(),
+        'role': 'employee',
+        'status': 'pending',
+        'createdAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
 
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-      content: Text('تم إنشاء الحساب (بانتظار موافقة الأدمن)'),
-    ));
-    Navigator.pushReplacementNamed(context, '/home');
-  } on FirebaseAuthException catch (e) {
-    setState(() => error = e.message);
-  } catch (e) {
-    setState(() => error = e.toString());
-  } finally {
-    if (mounted) setState(() => loading = false);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('تم إنشاء الحساب (بانتظار موافقة الأدمن)'),
+      ));
+      Navigator.pushReplacementNamed(context, '/home');
+    } on FirebaseAuthException catch (e) {
+      setState(() => error = e.message);
+    } catch (e) {
+      setState(() => error = e.toString());
+    } finally {
+      if (mounted) setState(() => loading = false);
+    }
   }
-}
 
   @override
   Widget build(BuildContext context) {
