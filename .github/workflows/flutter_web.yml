@@ -2,28 +2,41 @@ name: Build & Deploy Flutter Web
 
 on:
   push:
-    branches: [ main ]
-  workflow_dispatch: {}
+    branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   web:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup Flutter
-  uses: subosito/flutter-action@v2
-  with:
-    flutter-version: '3.22.0'
-    channel: 'stable'
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.22.0'
+          channel: 'stable'
 
-- name: Flutter Pub Get (verbose on failure)
-  run: |
-    set -e
-    flutter pub get || (echo "== RETRY VERBOSE ==" && flutter pub get -v)
+      - name: Enable web & versions
+        run: |
+          flutter --version
+          flutter config --enable-web
+
+      - name: Verify files
+        run: |
+          test -f pubspec.yaml || (echo "Missing pubspec.yaml" && exit 1)
+          test -f lib/main.dart || (echo "Missing lib/main.dart" && exit 1)
+          test -f web/index.html || (echo "Missing web/index.html" && exit 1)
+
+      - name: Flutter Pub Get (verbose on failure)
+        run: |
+          set -e
+          flutter pub get || (echo "== RETRY VERBOSE ==" && flutter pub get -v)
 
       - name: Build Web
-        run: flutter build web --release
+        run: flutter build web --release -v
 
       - name: Deploy to Firebase Hosting
         uses: FirebaseExtended/action-hosting-deploy@v0
