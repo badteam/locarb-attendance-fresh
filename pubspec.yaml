@@ -9,8 +9,9 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  # نبدأ بـ core فقط لتفادي تعارضات
   firebase_core: ^2.31.1
+  firebase_auth: ^5.1.4
+  cloud_firestore: ^5.4.4
 
 dev_dependencies:
   flutter_test:
@@ -19,7 +20,3 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
-
-firebase_auth: ^5.1.4
-cloud_firestore: ^5.4.4
-
