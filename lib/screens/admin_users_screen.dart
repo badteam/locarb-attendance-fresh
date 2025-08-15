@@ -16,9 +16,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
   String _query = '';
   static const int _limit = 200;
 
-  // simple cache for shift names
   final Map<String, String> _shiftNameCache = {};
-
   Future<String> _shiftName(String? shiftId) async {
     final id = (shiftId ?? '').trim();
     if (id.isEmpty) return 'Unassigned';
@@ -142,6 +140,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                     final status= (m['status'] ?? 'pending').toString();
                     final branchName = (m['branchName'] ?? 'Unassigned').toString();
                     final shiftId = (m['shiftId'] ?? '').toString();
+                    final canAny = (m['canCheckFromAnyBranch'] ?? false) == true;
 
                     return FutureBuilder<String>(
                       future: _shiftName(shiftId),
@@ -153,10 +152,13 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                           ),
                           title: Text(full.isNotEmpty ? full : uname),
                           subtitle: Text(
-                            'Role: $role • Status: $status\nBranch: $branchName • Shift: $shiftName\n$email',
+                            'Role: $role • Status: $status\n'
+                            'Branch: $branchName • Shift: $shiftName\n'
+                            'Any-branch: ${canAny ? 'Yes' : 'No'}\n'
+                            '$email',
                           ),
                           isThreeLine: true,
-                          trailing: _Actions(uid: uid, role: role, status: status),
+                          trailing: _Actions(uid: uid, role: role, status: status, canAny: canAny),
                           onTap: () => _openAssignBranch(context, uid),
                           onLongPress: () => _openAssignShift(context, uid),
                         );
@@ -253,7 +255,8 @@ class _Actions extends StatefulWidget {
   final String uid;
   final String role;
   final String status;
-  const _Actions({required this.uid, required this.role, required this.status});
+  final bool canAny;
+  const _Actions({required this.uid, required this.role, required this.status, required this.canAny});
 
   @override
   State<_Actions> createState() => _ActionsState();
@@ -282,7 +285,7 @@ class _ActionsState extends State<_Actions> {
     final isPending = widget.status == 'pending';
 
     if (loading) {
-      return const SizedBox(width: 120, height: 40, child: Center(child: CircularProgressIndicator()));
+      return const SizedBox(width: 140, height: 40, child: Center(child: CircularProgressIndicator()));
     }
 
     return Wrap(
@@ -308,15 +311,20 @@ class _ActionsState extends State<_Actions> {
             onPressed: () => _run(() => AdminService.makeEmployee(widget.uid)),
             child: const Text('Make Employee'),
           ),
-        OutlinedButton(
-          onPressed: () {
-            // Hint button (actual assignment via long-press on tile)
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Long-press the user row to assign a shift')),
-            );
-          },
-          child: const Text('Assign Shift (hint)'),
-        ),
+
+        // Toggle "any-branch"
+        if (!widget.canAny)
+          OutlinedButton(
+            onPressed: () => _run(() => FirebaseFirestore.instance.doc('users/${widget.uid}')
+                .update({'canCheckFromAnyBranch': true})),
+            child: const Text('Allow any branch'),
+          ),
+        if (widget.canAny)
+          OutlinedButton(
+            onPressed: () => _run(() => FirebaseFirestore.instance.doc('users/${widget.uid}')
+                .update({'canCheckFromAnyBranch': false})),
+            child: const Text('Restrict to assigned'),
+          ),
       ],
     );
   }
