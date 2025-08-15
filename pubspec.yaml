@@ -9,17 +9,14 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  # نسخ متوافقة مع البناء السحابي للويب
-  firebase_core: 2.31.1
-  firebase_auth: 4.19.6
-  cloud_firestore: 4.17.5
+  firebase_core: 2.31.1    # ثبّت أرقام النسخ
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: 3.0.2
 
-# حل تضارب js على الويب (مهم جدًا)
+# مهم لحل تعارضات الويب مع firebase_web
 dependency_overrides:
   js: 0.6.7
 
