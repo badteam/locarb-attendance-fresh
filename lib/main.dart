@@ -296,24 +296,34 @@ class HomeScreen extends StatelessWidget {
         return Scaffold(
           appBar: AppBar(
             title: const Text('الرئيسية'),
-            actions: [
-              if (admin)
-                IconButton(
-                  tooltip: 'لوحة الأدمن',
-                  onPressed: () => Navigator.pushNamed(context, '/admin/users'),
-                  icon: const Icon(Icons.admin_panel_settings),
-                ),
-              IconButton(
-                onPressed: () async {
-                  await AuthService.signOut();
-                  if (context.mounted) {
-                    Navigator.pushReplacementNamed(context, '/login');
-                  }
-                },
-                icon: const Icon(Icons.logout),
-              ),
-            ],
+actions: [
+  FutureBuilder<bool>(
+    future: (() async {
+      final uid = FirebaseAuth.instance.currentUser!.uid;
+      final snap = await FirebaseFirestore.instance.doc('users/$uid').get();
+      return (snap.data()?['role'] ?? '') == 'admin';
+    })(),
+    builder: (context, s) {
+      final isAdmin = s.data == true;
+      return Row(children: [
+        if (isAdmin)
+          IconButton(
+            tooltip: 'لوحة الأدمن',
+            onPressed: () => Navigator.pushNamed(context, '/admin/users'),
+            icon: const Icon(Icons.admin_panel_settings),
           ),
+        IconButton(
+          onPressed: () async {
+            await AuthService.signOut();
+            if (context.mounted) Navigator.pushReplacementNamed(context, '/login');
+          },
+          icon: const Icon(Icons.logout),
+        ),
+      ]);
+    },
+  ),
+],
+
           body: Center(
             child: Column(
               mainAxisSize: MainAxisSize.min,
