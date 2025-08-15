@@ -3,7 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 class DBInit {
   static final _db = FirebaseFirestore.instance;
 
-  /// ينشئ المستند الخاص بالمستخدم لو مش موجود
+  /// ينشئ المستند الخاص بالمستخدم لوo مش موجود
   static Future<void> ensureCurrentUserDoc({
     required String uid,
     required String username,
