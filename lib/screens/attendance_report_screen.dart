@@ -1,11 +1,11 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
-/// شاشة تقارير الحضور – عرض مهني مع:
-/// - فلاتر تاريخ + فرع
-/// - تجميع حسب اليوم
-/// - إظهار اسم الموظف والفرع من كاش بسيط
-/// - كروت أنيقة و Chips لنوع الحركة
+/// Attendance Reports (English)
+/// - Date range filter + optional branch filter
+/// - Grouped by day
+/// - Shows employee name, avatar, branch name and time
+/// - Branch filter is applied on the client to avoid composite index for now
 class AttendanceReportScreen extends StatefulWidget {
   const AttendanceReportScreen({super.key});
 
@@ -18,11 +18,12 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   DateTime _to = DateTime.now();
   String? _branchId;
 
-  // كاش بسيط للأسماء (يجنبنا استعلامات مكررة)
+  // Simple caches to avoid repeated reads
   final Map<String, String> _userNameCache = {};
+  final Map<String, String> _userAvatarCache = {};
   final Map<String, String> _branchNameCache = {};
 
-  // أدوات اختيار التاريخ
+  // Date pickers
   Future<void> _pickFrom() async {
     final d = await showDatePicker(
       context: context,
@@ -43,6 +44,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     if (d != null) setState(() => _to = DateTime(d.year, d.month, d.day));
   }
 
+  // YYYY-MM-DD (stable for ordering and comparisons)
   String _fmtDay(DateTime d) =>
       '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 
@@ -54,26 +56,31 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     return '$hh:$mm';
   }
 
-  // يجلب الاسم المعروض للمستخدم من الكاش أو Firestore
-  Future<String> _displayUser(String uid) async {
-    if (_userNameCache.containsKey(uid)) return _userNameCache[uid]!;
+  // Fetch user display info (name + avatarUrl)
+  Future<(String name, String avatarUrl)> _userInfo(String uid) async {
+    if (_userNameCache.containsKey(uid) || _userAvatarCache.containsKey(uid)) {
+      return (_userNameCache[uid] ?? uid, _userAvatarCache[uid] ?? '');
+    }
     try {
       final s = await FirebaseFirestore.instance.doc('users/$uid').get();
       final m = s.data() ?? {};
       final full = (m['fullName'] ?? '').toString();
       final uname = (m['username'] ?? '').toString();
       final name = full.isNotEmpty ? full : (uname.isNotEmpty ? uname : uid);
+      final avatar = (m['avatarUrl'] ?? '').toString();
       _userNameCache[uid] = name;
-      return name;
+      _userAvatarCache[uid] = avatar;
+      return (name, avatar);
     } catch (_) {
       _userNameCache[uid] = uid;
-      return uid;
+      _userAvatarCache[uid] = '';
+      return (uid, '');
     }
   }
 
-  // يجلب اسم الفرع من الكاش أو Firestore
-  Future<String> _displayBranch(String id) async {
-    if (id.isEmpty) return 'غير مُعيّن';
+  // Fetch branch name
+  Future<String> _branchName(String id) async {
+    if (id.isEmpty) return 'Unassigned';
     if (_branchNameCache.containsKey(id)) return _branchNameCache[id]!;
     try {
       final s = await FirebaseFirestore.instance.doc('branches/$id').get();
@@ -89,27 +96,21 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // استعلام الحضور: فلترة بالمدى (localDay) + فرع اختياري
+    // Query by date range only; order by the same field to avoid composite index
     Query<Map<String, dynamic>> q = FirebaseFirestore.instance
         .collection('attendance')
         .where('localDay', isGreaterThanOrEqualTo: _fmtDay(_from))
-        .where('localDay', isLessThanOrEqualTo: _fmtDay(_to));
+        .where('localDay', isLessThanOrEqualTo: _fmtDay(_to))
+        .orderBy('localDay', descending: true);
 
-    if (_branchId != null && _branchId!.isNotEmpty) {
-      q = q.where('branchId', isEqualTo: _branchId);
-    }
-
-    // لتقليل الفهارس المطلوبة: نرتب على نفس حقل الفلترة
-    q = q.orderBy('localDay', descending: true);
-
-    // قائمة الفروع لعنصر الفلتر
     final branchesRef =
         FirebaseFirestore.instance.collection('branches').orderBy('name');
 
     return Scaffold(
       body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // شريط الفلاتر (تصميم نظيف)
+          // Filters bar
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
             child: Wrap(
@@ -119,30 +120,29 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
               children: [
                 _FilterButton(
                   icon: Icons.date_range,
-                  label: 'من: ${_fmtDay(_from)}',
+                  label: 'From: ${_fmtDay(_from)}',
                   onTap: _pickFrom,
                 ),
                 _FilterButton(
                   icon: Icons.event,
-                  label: 'إلى: ${_fmtDay(_to)}',
+                  label: 'To: ${_fmtDay(_to)}',
                   onTap: _pickTo,
                 ),
                 StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                   stream: branchesRef.snapshots(),
                   builder: (context, snap) {
                     final items = <DropdownMenuItem<String>>[
-                      const DropdownMenuItem(value: '', child: Text('كل الفروع')),
+                      const DropdownMenuItem(value: '', child: Text('All branches')),
                     ];
                     if (snap.hasData) {
                       for (final d in snap.data!.docs) {
                         final name = (d.data()['name'] ?? d.id).toString();
-                        items.add(DropdownMenuItem(
-                            value: d.id, child: Text(name)));
+                        items.add(DropdownMenuItem(value: d.id, child: Text(name)));
                       }
                     }
                     return InputDecorator(
                       decoration: const InputDecoration(
-                        labelText: 'الفرع',
+                        labelText: 'Branch',
                         border: OutlineInputBorder(),
                         isDense: true,
                       ),
@@ -150,8 +150,8 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                         child: DropdownButton<String>(
                           value: _branchId ?? '',
                           items: items,
-                          onChanged: (v) => setState(
-                              () => _branchId = (v ?? '').isEmpty ? null : v),
+                          onChanged: (v) =>
+                              setState(() => _branchId = (v ?? '').isEmpty ? null : v),
                         ),
                       ),
                     );
@@ -160,10 +160,9 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
               ],
             ),
           ),
-          const SizedBox(height: 4),
           const Divider(height: 1),
 
-          // القائمة
+          // List
           Expanded(
             child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
               stream: q.snapshots(),
@@ -175,32 +174,40 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                   return const Center(child: CircularProgressIndicator());
                 }
 
-                final docs = snap.data?.docs ?? [];
-                if (docs.isEmpty) {
-                  return const Center(child: Text('لا توجد سجلات في المدى المختار'));
+                var docs = snap.data?.docs ?? [];
+
+                // Client-side branch filter (no composite index needed)
+                if (_branchId != null && _branchId!.isNotEmpty) {
+                  docs = docs
+                      .where((d) =>
+                          (d.data()['branchId'] ?? '').toString() == _branchId)
+                      .toList();
                 }
 
-                // ملخص سريع
+                if (docs.isEmpty) {
+                  return const Center(child: Text('No records in the selected range'));
+                }
+
+                // Summary
                 final uniqueUsers = <String>{};
                 for (final d in docs) {
                   uniqueUsers.add((d.data()['userId'] ?? '').toString());
                 }
 
-                // تجميع حسب اليوم
+                // Group by day
                 final Map<String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>
                     byDay = {};
                 for (final d in docs) {
                   final day = (d.data()['localDay'] ?? '').toString();
                   byDay.putIfAbsent(day, () => []).add(d);
                 }
-                final orderedDays = byDay.keys.toList()..sort((a, b) => b.compareTo(a)); // تنازلي
+                final orderedDays = byDay.keys.toList()..sort((a, b) => b.compareTo(a));
 
                 return ListView.builder(
                   padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
-                  itemCount: orderedDays.length + 1, // +1 للملخص أعلى
+                  itemCount: orderedDays.length + 1,
                   itemBuilder: (context, index) {
                     if (index == 0) {
-                      // كارت الملخص
                       return Card(
                         elevation: 0,
                         color: Theme.of(context).colorScheme.surfaceVariant,
@@ -209,8 +216,8 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                           child: Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              Text('إجمالي السجلات: ${docs.length}'),
-                              Text('عدد الموظفين: ${uniqueUsers.length}'),
+                              Text('Total records: ${docs.length}'),
+                              Text('Employees: ${uniqueUsers.length}'),
                             ],
                           ),
                         ),
@@ -222,8 +229,8 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                     return _DaySection(
                       day: day,
                       items: items,
-                      userNameOf: _displayUser,
-                      branchNameOf: _displayBranch,
+                      userInfoOf: _userInfo,
+                      branchNameOf: _branchName,
                       fmtTime: _fmtTime,
                     );
                   },
@@ -237,18 +244,18 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   }
 }
 
-/// عنصر تجميعي ليوم واحد
+/// Section for a single day
 class _DaySection extends StatelessWidget {
   final String day;
   final List<QueryDocumentSnapshot<Map<String, dynamic>>> items;
-  final Future<String> Function(String uid) userNameOf;
+  final Future<(String name, String avatarUrl)> Function(String uid) userInfoOf;
   final Future<String> Function(String branchId) branchNameOf;
   final String Function(Timestamp? ts) fmtTime;
 
   const _DaySection({
     required this.day,
     required this.items,
-    required this.userNameOf,
+    required this.userInfoOf,
     required this.branchNameOf,
     required this.fmtTime,
   });
@@ -258,68 +265,58 @@ class _DaySection extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // عنوان اليوم
         Padding(
           padding: const EdgeInsets.only(top: 12, bottom: 6),
-          child: Text('التاريخ: $day',
-              style: Theme.of(context).textTheme.titleMedium),
+          child:
+              Text('Date: $day', style: Theme.of(context).textTheme.titleMedium),
         ),
-        // كروت السجلات
         ...items.map((d) {
           final m = d.data();
           final uid = (m['userId'] ?? '').toString();
-          final typ = (m['type'] ?? '').toString(); // in/out
+          final typ = (m['type'] ?? '').toString(); // in / out
           final branchId = (m['branchId'] ?? '').toString();
           final lat = (m['lat'] ?? 0).toString();
           final lng = (m['lng'] ?? 0).toString();
           final at = m['at'] is Timestamp ? (m['at'] as Timestamp) : null;
 
-          return FutureBuilder<List<String>>(
-            future: Future.wait([
-              userNameOf(uid),
-              branchNameOf(branchId),
-            ]),
-            builder: (context, snap) {
-              final userName = (snap.data?[0] ?? uid);
-              final branchName = (snap.data?[1] ?? branchId);
+          return FutureBuilder<(String name, String avatarUrl)>(
+            future: userInfoOf(uid),
+            builder: (context, userSnap) {
+              final name = (userSnap.data?.$1 ?? uid);
+              final avatarUrl = (userSnap.data?.$2 ?? '');
+              return FutureBuilder<String>(
+                future: branchNameOf(branchId),
+                builder: (context, brSnap) {
+                  final branchName = (brSnap.data ?? branchId);
 
-              return Card(
-                margin: const EdgeInsets.only(bottom: 8),
-                elevation: 1.5,
-                child: ListTile(
-                  leading: CircleAvatar(
-                    backgroundColor:
-                        typ == 'in' ? Colors.green.shade600 : Colors.red.shade600,
-                    child: Icon(
-                      typ == 'in' ? Icons.login : Icons.logout,
-                      color: Colors.white,
-                    ),
-                  ),
-                  title: Text(userName, textDirection: TextDirection.rtl),
-                  subtitle: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const SizedBox(height: 2),
-                      Text(
-                        'الفرع: $branchName • الوقت: ${fmtTime(at)}',
-                        textDirection: TextDirection.rtl,
+                  return Card(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    elevation: 1.5,
+                    child: ListTile(
+                      leading: _Avatar(avatarUrl: avatarUrl, name: name, typ: typ),
+                      title: Text(name),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const SizedBox(height: 2),
+                          Text('Branch: $branchName • Time: ${fmtTime(at)}'),
+                          Text(
+                            '($lat, $lng)',
+                            style: const TextStyle(fontSize: 12, color: Colors.black54),
+                          ),
+                        ],
                       ),
-                      Text(
-                        '(${lat}, ${lng})',
-                        style: const TextStyle(fontSize: 12, color: Colors.black54),
-                        textDirection: TextDirection.rtl,
+                      trailing: Chip(
+                        label: Text(
+                          typ == 'in' ? 'Check-in' : 'Check-out',
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                        backgroundColor:
+                            typ == 'in' ? Colors.green.shade600 : Colors.red.shade600,
                       ),
-                    ],
-                  ),
-                  trailing: Chip(
-                    label: Text(
-                      typ == 'in' ? 'دخول' : 'انصراف',
-                      style: const TextStyle(color: Colors.white),
                     ),
-                    backgroundColor:
-                        typ == 'in' ? Colors.green.shade600 : Colors.red.shade600,
-                  ),
-                ),
+                  );
+                },
               );
             },
           );
@@ -329,7 +326,28 @@ class _DaySection extends StatelessWidget {
   }
 }
 
-/// زر فلتر أنيق
+/// Avatar with photo if available, otherwise first letter
+class _Avatar extends StatelessWidget {
+  final String avatarUrl;
+  final String name;
+  final String typ;
+  const _Avatar({required this.avatarUrl, required this.name, required this.typ});
+
+  @override
+  Widget build(BuildContext context) {
+    final bg = typ == 'in' ? Colors.green.shade600 : Colors.red.shade600;
+    if (avatarUrl.isNotEmpty) {
+      return CircleAvatar(backgroundImage: NetworkImage(avatarUrl));
+    }
+    final ch = name.isNotEmpty ? name.trim()[0].toUpperCase() : '?';
+    return CircleAvatar(
+      backgroundColor: bg,
+      child: Text(ch, style: const TextStyle(color: Colors.white)),
+    );
+  }
+}
+
+/// Nice filter button
 class _FilterButton extends StatelessWidget {
   final IconData icon;
   final String label;
@@ -354,7 +372,7 @@ class _FilterButton extends StatelessWidget {
   }
 }
 
-/// صندوق خطأ واضح
+/// Clear error box
 class _ErrorBox extends StatelessWidget {
   final String error;
   const _ErrorBox({required this.error});
@@ -368,9 +386,9 @@ class _ErrorBox extends StatelessWidget {
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Text(
-            'خطأ في الاستعلام:\n$error\n\n'
-            'لو الرسالة تشير إلى Index، افتح Firebase Console > Firestore > Indexes وأنشئ الفهرس المطلوب.',
-            textDirection: TextDirection.rtl,
+            'Query error:\n$error\n\n'
+            'If it mentions an index, you can either select "All branches" '
+            'or create the composite index in Firebase Console > Firestore > Indexes.',
           ),
         ),
       ),
