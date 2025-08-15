@@ -7,6 +7,7 @@ import 'firebase_options.dart';
 import 'services/auth_service.dart';
 import 'services/db_init.dart';
 import 'screens/admin_users_screen.dart';
+import 'screens/admin_dashboard.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -31,6 +32,7 @@ class LoCarbApp extends StatelessWidget {
         '/home': (_) => const HomeScreen(),
         '/pending': (_) => const PendingScreen(),
         '/admin/users': (_) => const AdminUsersScreen(),
+        '/admin': (_) => const AdminDashboard(),
       },
       home: const RootRouter(),
       debugShowCheckedModeBanner: false,
@@ -335,10 +337,10 @@ class HomeScreen extends StatelessWidget {
             actions: [
               if (isAdmin)
                 IconButton(
-                  tooltip: 'لوحة الأدمن',
-                  onPressed: () => Navigator.pushNamed(context, '/admin/users'),
-                  icon: const Icon(Icons.admin_panel_settings),
-                ),
+  tooltip: 'لوحة الأدمن',
+  onPressed: () => Navigator.pushNamed(context, '/admin'),
+  icon: const Icon(Icons.admin_panel_settings),
+),
               IconButton(
                 onPressed: () async {
                   await AuthService.signOut();
