@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+
 import 'firebase_options.dart';
 import 'services/auth_service.dart';
 import 'services/db_init.dart';
@@ -20,13 +21,16 @@ class LoCarbApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'LoCarb Attendance',
-      theme: ThemeData(colorSchemeSeed: const Color(0xFFFF8A00), useMaterial3: true),
+      theme: ThemeData(
+        colorSchemeSeed: const Color(0xFFFF8A00), // لون لوكارب
+        useMaterial3: true,
+      ),
       routes: {
-        '/admin/users': (_) => const AdminUsersScreen(),
         '/login': (_) => const LoginScreen(),
         '/signup': (_) => const SignUpScreen(),
         '/home': (_) => const HomeScreen(),
         '/pending': (_) => const PendingScreen(),
+        '/admin/users': (_) => const AdminUsersScreen(),
       },
       home: const RootRouter(),
       debugShowCheckedModeBanner: false,
@@ -34,6 +38,7 @@ class LoCarbApp extends StatelessWidget {
   }
 }
 
+/// يوجه حسب حالة المصادقة، ثم يشغل تهيئة قاعدة البيانات عند أول دخول
 class RootRouter extends StatelessWidget {
   const RootRouter({super.key});
   @override
@@ -46,13 +51,13 @@ class RootRouter extends StatelessWidget {
         }
         final user = snap.data;
         if (user == null) return const OnboardingScreen();
-        // بعد تسجيل الدخول ننفّذ تهيئة قاعدة البيانات
         return InitGate(user: user);
       },
     );
   }
 }
 
+/// يشغّل تهيئة الداتابيز (إنشاء المجموعات الأساسية) ثم يوجّه حسب حالة المستخدم
 class InitGate extends StatefulWidget {
   final User user;
   const InitGate({super.key, required this.user});
@@ -73,14 +78,17 @@ class _InitGateState extends State<InitGate> {
 
   Future<void> _bootstrap() async {
     try {
-      // 1) تأكيد مستند المستخدم (بدون افتراض وجوده مسبقًا)
+      // تأكيد مستند المستخدم (إن لم يكن موجودًا)
+      final email = widget.user.email ?? '';
+      final username = email.isNotEmpty ? email.split('@').first : widget.user.uid;
       await DBInit.ensureCurrentUserDoc(
         uid: widget.user.uid,
-        username: (widget.user.email ?? '').split('@').first,
-        email: widget.user.email,
-        fullName: '', // لو عندك قيمة من واجهة التسجيل مرّرها هنا
+        username: username,
+        email: email,
+        fullName: '',
       );
-      // 2) إنشاء المجموعات الأساسية لو فاضية
+
+      // إنشاء المجموعات الأساسية لو فاضية (companies/branches/shifts/…)
       await DBInit.ensureBaseCollections();
 
       if (mounted) setState(() => _done = true);
@@ -92,16 +100,13 @@ class _InitGateState extends State<InitGate> {
   @override
   Widget build(BuildContext context) {
     if (_error != null) {
-      return Scaffold(
-        body: Center(child: Text('Init error: $_error')),
-      );
+      return Scaffold(body: Center(child: Text('Init error: $_error')));
     }
     if (!_done) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
-    // بعد التهيئة، وجّه حسب حالة المستخدم
+
+    // بعد التهيئة: حمّل بيانات المستخدم وحدد وجهته
     return FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
       future: FirebaseFirestore.instance.doc('users/${widget.user.uid}').get(),
       builder: (context, snap) {
@@ -133,7 +138,7 @@ class OnboardingScreen extends StatelessWidget {
               textDirection: TextDirection.rtl, textAlign: TextAlign.center),
           const SizedBox(height: 24),
           FilledButton(
-            onPressed: ()=> Navigator.pushReplacementNamed(context, '/login'),
+            onPressed: () => Navigator.pushReplacementNamed(context, '/login'),
             child: const Text('ابدأ', textDirection: TextDirection.rtl),
           ),
         ]),
@@ -147,11 +152,11 @@ class LoginScreen extends StatefulWidget {
   @override
   State<LoginScreen> createState() => _LoginScreenState();
 }
-
 class _LoginScreenState extends State<LoginScreen> {
   final username = TextEditingController();
   final password = TextEditingController();
-  String? error; bool loading = false;
+  String? error;
+  bool loading = false;
 
   Future<void> _login() async {
     setState(() { loading = true; error = null; });
@@ -161,8 +166,18 @@ class _LoginScreenState extends State<LoginScreen> {
       Navigator.pushReplacementNamed(context, '/home');
     } on FirebaseAuthException catch (e) {
       setState(() => error = e.message);
-    } catch (e) { setState(() => error = e.toString()); }
-    finally { if (mounted) setState(() => loading = false); }
+    } catch (e) {
+      setState(() => error = e.toString());
+    } finally {
+      if (mounted) setState(() => loading = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    username.dispose();
+    password.dispose();
+    super.dispose();
   }
 
   @override
@@ -179,13 +194,19 @@ class _LoginScreenState extends State<LoginScreen> {
               const SizedBox(height: 8),
               TextField(controller: password, decoration: const InputDecoration(labelText: 'كلمة المرور'), obscureText: true),
               const SizedBox(height: 12),
-              FilledButton(onPressed: loading? null : _login,
-                child: loading? const CircularProgressIndicator() : const Text('دخول')),
-              TextButton(onPressed: ()=> Navigator.pushNamed(context, '/signup'),
-                child: const Text('إنشاء حساب جديد')),
-              if (error != null) Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(error!, style: const TextStyle(color: Colors.red))),
+              FilledButton(
+                onPressed: loading ? null : _login,
+                child: loading ? const CircularProgressIndicator() : const Text('دخول'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pushNamed(context, '/signup'),
+                child: const Text('إنشاء حساب جديد'),
+              ),
+              if (error != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(error!, style: const TextStyle(color: Colors.red)),
+                ),
             ]),
           ),
         ),
@@ -199,34 +220,35 @@ class SignUpScreen extends StatefulWidget {
   @override
   State<SignUpScreen> createState() => _SignUpScreenState();
 }
-
 class _SignUpScreenState extends State<SignUpScreen> {
   final username = TextEditingController();
   final password = TextEditingController();
   final fullName = TextEditingController();
-  String? error; bool loading = false;
+  String? error;
+  bool loading = false;
 
   Future<void> _signup() async {
     setState(() { loading = true; error = null; });
     try {
-      // إنشاء الحساب
+      // إنشاء الحساب (نحول اليوزرنيم لإيميل داخلي عند AuthService)
       final cred = await AuthService.signUp(username.text, password.text);
       final uid = cred.user!.uid;
 
-      // بدون أي استعلامات: الحسابات الجديدة = pending + employee
+      // إنشاء مستند المستخدم مباشرة كموظف Pending (بدون أي استعلامات)
       await FirebaseFirestore.instance.doc('users/$uid').set({
         'uid': uid,
         'username': username.text.trim(),
-        'fullName': fullName.text.trim(),
+        'email': cred.user!.email,
+        'fullName': fullName.text.trim().isEmpty ? username.text.trim() : fullName.text.trim(),
         'role': 'employee',
         'status': 'pending',
         'createdAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('تم إنشاء الحساب (بانتظار موافقة الأدمن)'),
-      ));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('تم إنشاء الحساب (بانتظار موافقة الأدمن)')),
+      );
       Navigator.pushReplacementNamed(context, '/home');
     } on FirebaseAuthException catch (e) {
       setState(() => error = e.message);
@@ -235,6 +257,14 @@ class _SignUpScreenState extends State<SignUpScreen> {
     } finally {
       if (mounted) setState(() => loading = false);
     }
+  }
+
+  @override
+  void dispose() {
+    username.dispose();
+    password.dispose();
+    fullName.dispose();
+    super.dispose();
   }
 
   @override
@@ -253,11 +283,15 @@ class _SignUpScreenState extends State<SignUpScreen> {
               const SizedBox(height: 8),
               TextField(controller: fullName, decoration: const InputDecoration(labelText: 'الاسم الكامل')),
               const SizedBox(height: 12),
-              FilledButton(onPressed: loading? null : _signup,
-                child: loading? const CircularProgressIndicator() : const Text('تسجيل')),
-              if (error != null) Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(error!, style: const TextStyle(color: Colors.red))),
+              FilledButton(
+                onPressed: loading ? null : _signup,
+                child: loading ? const CircularProgressIndicator() : const Text('تسجيل'),
+              ),
+              if (error != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(error!, style: const TextStyle(color: Colors.red)),
+                ),
             ]),
           ),
         ),
@@ -271,7 +305,9 @@ class PendingScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return const Scaffold(
-      body: Center(child: Text('تم إنشاء الحساب، بانتظار موافقة الأدمن', textDirection: TextDirection.rtl)),
+      body: Center(
+        child: Text('تم إنشاء الحساب، بانتظار موافقة الأدمن', textDirection: TextDirection.rtl),
+      ),
     );
   }
 }
@@ -292,45 +328,35 @@ class HomeScreen extends StatelessWidget {
     return FutureBuilder<bool>(
       future: _isAdmin(),
       builder: (context, snap) {
-        final admin = snap.data == true;
+        final isAdmin = snap.data == true;
         return Scaffold(
           appBar: AppBar(
             title: const Text('الرئيسية'),
-actions: [
-  FutureBuilder<bool>(
-    future: (() async {
-      final uid = FirebaseAuth.instance.currentUser!.uid;
-      final snap = await FirebaseFirestore.instance.doc('users/$uid').get();
-      return (snap.data()?['role'] ?? '') == 'admin';
-    })(),
-    builder: (context, s) {
-      final isAdmin = s.data == true;
-      return Row(children: [
-        if (isAdmin)
-          IconButton(
-            tooltip: 'لوحة الأدمن',
-            onPressed: () => Navigator.pushNamed(context, '/admin/users'),
-            icon: const Icon(Icons.admin_panel_settings),
+            actions: [
+              if (isAdmin)
+                IconButton(
+                  tooltip: 'لوحة الأدمن',
+                  onPressed: () => Navigator.pushNamed(context, '/admin/users'),
+                  icon: const Icon(Icons.admin_panel_settings),
+                ),
+              IconButton(
+                onPressed: () async {
+                  await AuthService.signOut();
+                  if (context.mounted) {
+                    Navigator.pushReplacementNamed(context, '/login');
+                  }
+                },
+                icon: const Icon(Icons.logout),
+              ),
+            ],
           ),
-        IconButton(
-          onPressed: () async {
-            await AuthService.signOut();
-            if (context.mounted) Navigator.pushReplacementNamed(context, '/login');
-          },
-          icon: const Icon(Icons.logout),
-        ),
-      ]);
-    },
-  ),
-],
-
           body: Center(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text('أهلًا ${user?.email ?? ''}', textDirection: TextDirection.rtl),
                 const SizedBox(height: 12),
-                if (admin) const Text('وضعك: أدمن', style: TextStyle(fontWeight: FontWeight.bold)),
+                if (isAdmin) const Text('وضعك: أدمن', style: TextStyle(fontWeight: FontWeight.bold)),
               ],
             ),
           ),
@@ -339,4 +365,3 @@ actions: [
     );
   }
 }
-
