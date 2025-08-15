@@ -40,8 +40,8 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   Widget build(BuildContext context) {
     final branchesRef = FirebaseFirestore.instance.collection('branches').orderBy('name');
 
-    // نبني الاستعلام حسب الفرع والتاريخ (يعتمد على الحقل localDay نصّيًا YYYY-MM-DD)
-    Query<Map<String,dynamic>> q = FirebaseFirestore.instance
+    // الاستعلام: فلترة باليوم (سلسلة نصية YYYY-MM-DD) + فرع اختياري
+    Query<Map<String, dynamic>> q = FirebaseFirestore.instance
         .collection('attendance')
         .where('localDay', isGreaterThanOrEqualTo: _fmt(_from))
         .where('localDay', isLessThanOrEqualTo: _fmt(_to));
@@ -49,6 +49,9 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     if (_branchId != null && _branchId!.isNotEmpty) {
       q = q.where('branchId', isEqualTo: _branchId);
     }
+
+    // لتقليل الفهارس المطلوبة: رتب على نفس حقل الفلترة
+    q = q.orderBy('localDay', descending: true);
 
     return Column(
       children: [
@@ -72,7 +75,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                 ),
               ),
               const SizedBox(width: 8),
-              StreamBuilder<QuerySnapshot<Map<String,dynamic>>>(
+              StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                 stream: branchesRef.snapshots(),
                 builder: (context, snap) {
                   final items = <DropdownMenuItem<String>>[
@@ -96,9 +99,19 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
         ),
         const Divider(height: 1),
         Expanded(
-          child: StreamBuilder<QuerySnapshot<Map<String,dynamic>>>(
-            stream: q.orderBy('at', descending: true).snapshots(),
+          child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>>(
+            stream: q.snapshots(),
             builder: (context, snap) {
+              if (snap.hasError) {
+                return Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text(
+                    'خطأ في الاستعلام:\n${snap.error}\n\n'
+                    'غالبًا نحتاج إنشاء فهرس (Index). افتح Firebase Console > Firestore > Indexes > Composite وأنشئ الفهرس المطلوب.',
+                    textDirection: TextDirection.rtl,
+                  ),
+                );
+              }
               if (snap.connectionState == ConnectionState.waiting) {
                 return const Center(child: CircularProgressIndicator());
               }
@@ -107,27 +120,15 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                 return const Center(child: Text('لا توجد سجلات في المدى المختار'));
               }
 
-              // تجميع سريع حسب المستخدم
-              final Map<String, Map<String, dynamic>> summary = {};
+              // عرض بسيط للسجلات + ملخص أعلى
+              final total = docs.length;
+              final uniqueUsers = <String>{};
               for (final d in docs) {
-                final m = d.data();
-                final uid = (m['userId'] ?? '').toString();
-                final typ = (m['type'] ?? 'in').toString();
-                final day = (m['localDay'] ?? '').toString();
-
-                summary.putIfAbsent(uid, () => {
-                  'userId': uid,
-                  'in': 0,
-                  'out': 0,
-                  'days': <String>{},
-                });
-                summary[uid]!['days'].add(day);
-                summary[uid]![typ] = (summary[uid]![typ] as int) + 1;
+                uniqueUsers.add((d.data()['userId'] ?? '').toString());
               }
 
               return Column(
                 children: [
-                  // كارت خلاصة
                   Padding(
                     padding: const EdgeInsets.all(12),
                     child: Card(
@@ -136,15 +137,14 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            Text('إجمالي السجلات: ${docs.length}'),
-                            Text('عدد الموظفين: ${summary.length}'),
+                            Text('إجمالي السجلات: $total'),
+                            Text('عدد الموظفين: ${uniqueUsers.length}'),
                           ],
                         ),
                       ),
                     ),
                   ),
                   const Divider(height: 1),
-                  // قائمة السجلات
                   Expanded(
                     child: ListView.separated(
                       padding: const EdgeInsets.all(12),
