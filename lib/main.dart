@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'firebase_options.dart';
 import 'services/auth_service.dart';
+import 'services/db_init.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -43,18 +44,72 @@ class RootRouter extends StatelessWidget {
         }
         final user = snap.data;
         if (user == null) return const OnboardingScreen();
-        return FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-          future: FirebaseFirestore.instance.doc('users/${user.uid}').get(),
-          builder: (context, userSnap) {
-            if (!userSnap.hasData) {
-              return const Scaffold(body: Center(child: CircularProgressIndicator()));
-            }
-            final data = userSnap.data!.data() ?? {};
-            final status = (data['status'] ?? 'pending') as String;
-            if (status == 'approved') return const HomeScreen();
-            return const PendingScreen();
-          },
-        );
+        // بعد تسجيل الدخول ننفّذ تهيئة قاعدة البيانات
+        return InitGate(user: user);
+      },
+    );
+  }
+}
+
+class InitGate extends StatefulWidget {
+  final User user;
+  const InitGate({super.key, required this.user});
+
+  @override
+  State<InitGate> createState() => _InitGateState();
+}
+
+class _InitGateState extends State<InitGate> {
+  bool _done = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _bootstrap();
+  }
+
+  Future<void> _bootstrap() async {
+    try {
+      // 1) تأكيد مستند المستخدم (بدون افتراض وجوده مسبقًا)
+      await DBInit.ensureCurrentUserDoc(
+        uid: widget.user.uid,
+        username: (widget.user.email ?? '').split('@').first,
+        email: widget.user.email,
+        fullName: '', // لو عندك قيمة من واجهة التسجيل مرّرها هنا
+      );
+      // 2) إنشاء المجموعات الأساسية لو فاضية
+      await DBInit.ensureBaseCollections();
+
+      if (mounted) setState(() => _done = true);
+    } catch (e) {
+      if (mounted) setState(() => _error = e.toString());
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_error != null) {
+      return Scaffold(
+        body: Center(child: Text('Init error: $_error')),
+      );
+    }
+    if (!_done) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+    // بعد التهيئة، وجّه حسب حالة المستخدم
+    return FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      future: FirebaseFirestore.instance.doc('users/${widget.user.uid}').get(),
+      builder: (context, snap) {
+        if (!snap.hasData) {
+          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+        }
+        final data = snap.data!.data() ?? {};
+        final status = (data['status'] ?? 'pending') as String;
+        if (status == 'approved') return const HomeScreen();
+        return const PendingScreen();
       },
     );
   }
