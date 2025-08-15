@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'admin_users_screen.dart';
 import 'branches_screen.dart';
-import 'attendance_report_screen.dart'; // ⬅️1 جديد
+import 'attendance_report_screen.dart';
+import 'shifts_screen.dart';
 
 class AdminDashboard extends StatelessWidget {
   const AdminDashboard({super.key});
@@ -9,15 +10,16 @@ class AdminDashboard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 3, // ⬅️ كان 2
+      length: 4,
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('لوحة الأدمن'),
+          title: const Text('Admin Dashboard'),
           bottom: const TabBar(
             tabs: [
-              Tab(icon: Icon(Icons.people), text: 'المستخدمون'),
-              Tab(icon: Icon(Icons.store_mall_directory), text: 'الفروع'),
-              Tab(icon: Icon(Icons.fact_check), text: 'تقارير الحضور'), // ⬅️ جديد
+              Tab(icon: Icon(Icons.people), text: 'Users'),
+              Tab(icon: Icon(Icons.store_mall_directory), text: 'Branches'),
+              Tab(icon: Icon(Icons.access_time_filled), text: 'Shifts'),
+              Tab(icon: Icon(Icons.fact_check), text: 'Attendance'),
             ],
           ),
         ),
@@ -25,7 +27,8 @@ class AdminDashboard extends StatelessWidget {
           children: [
             AdminUsersScreen(),
             BranchesScreen(),
-            AttendanceReportScreen(), // ⬅️ جديد
+            ShiftsScreen(),            // ⬅️ NEW
+            AttendanceReportScreen(),
           ],
         ),
       ),
