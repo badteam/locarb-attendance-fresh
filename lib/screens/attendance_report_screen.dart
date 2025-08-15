@@ -99,7 +99,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
         ),
         const Divider(height: 1),
         Expanded(
-          child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>>(
+          child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
             stream: q.snapshots(),
             builder: (context, snap) {
               if (snap.hasError) {
