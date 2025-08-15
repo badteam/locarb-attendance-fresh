@@ -8,18 +8,19 @@ class AttendanceService {
   static Future<void> checkInOut({required bool isCheckIn}) async {
     final uid = FirebaseAuth.instance.currentUser!.uid;
 
-    // اقرأ بيانات المستخدم لمعرفة الفرع المعيّن
+    // 1) Read user to know branch & shift
     final userSnap = await _db.doc('users/$uid').get();
     final user = userSnap.data() ?? {};
     final branchId = (user['branchId'] ?? '').toString();
+    final shiftId = (user['shiftId'] ?? '').toString();
     if (branchId.isEmpty) {
-      throw Exception('لم يتم تعيين فرع للمستخدم.');
+      throw Exception('No branch assigned to the user.');
     }
 
-    // اقرأ بيانات الفرع (الموقع ونصف القطر)
+    // 2) Read branch geo radius
     final branchSnap = await _db.doc('branches/$branchId').get();
     if (!branchSnap.exists) {
-      throw Exception('لم يتم العثور على الفرع.');
+      throw Exception('Branch not found.');
     }
     final b = branchSnap.data()!;
     final geo = (b['geo'] ?? {}) as Map<String, dynamic>;
@@ -27,32 +28,33 @@ class AttendanceService {
     final centerLng = (geo['lng'] ?? 0).toDouble();
     final radius = (geo['radiusMeters'] ?? 150).toDouble();
 
-    // موقع المستخدم الآن
+    // 3) Current position
     final pos = await Geo.currentPosition();
-    if (pos.lat == 0 && pos.lng == 0) {
-      throw Exception('فشل الحصول على الموقع. يُرجى السماح للموقع في المتصفح.');
+    if (pos.lat == 0.0 && pos.lng == 0.0) {
+      throw Exception('Failed to get location. Please allow location access.');
     }
 
-    // تحقق الجيوفنس
+    // 4) Geofence check
     final dist = Geo.distanceMeters(pos.lat, pos.lng, centerLat, centerLng);
     if (dist > radius) {
-      throw Exception('خارج نطاق موقع الفرع (${dist.toStringAsFixed(0)} م / المسموح $radius م).');
+      throw Exception('Outside branch radius (${dist.toStringAsFixed(0)} m / allowed $radius m).');
     }
 
-    // اكتب سجل حضور
+    // 5) Write attendance record
     final now = DateTime.now();
     final dayKey = '${now.year}-${now.month.toString().padLeft(2,'0')}-${now.day.toString().padLeft(2,'0')}';
 
-    final doc = _db.collection('attendance').doc(); // سجل منفصل لكل حركة
+    final doc = _db.collection('attendance').doc();
     await doc.set({
       'userId': uid,
       'branchId': branchId,
+      'shiftId': shiftId,                 // ⬅️ NEW
       'type': isCheckIn ? 'in' : 'out',
       'at': FieldValue.serverTimestamp(),
       'localDay': dayKey,
       'lat': pos.lat,
       'lng': pos.lng,
-      'distance': dist, // للمراجعة
+      'distance': dist,
     });
   }
 }
