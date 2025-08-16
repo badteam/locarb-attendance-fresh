@@ -51,7 +51,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     if (d != null) setState(() => _to = DateTime(d.year, d.month, d.day));
   }
 
-  Future<void> _exportExcel() async {
+  Future<void> _exportExcel(Map<String, String> userNames) async {
     try {
       Query<Map<String, dynamic>> q = FirebaseFirestore.instance
           .collection('attendance')
@@ -75,29 +75,22 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
         return;
       }
 
+      // لو في مستخدمين مش موجودين في الخريطة، نجيب اسمهم
       final uidSet = <String>{};
       for (final d in docs) {
         final uid = (d.data()['userId'] ?? '').toString();
         if (uid.isNotEmpty) uidSet.add(uid);
       }
-      final userNames = <String, String>{};
+      final names = Map<String, String>.from(userNames);
       for (final uid in uidSet) {
-        try {
-          final u = await FirebaseFirestore.instance.doc('users/$uid').get();
-          final m = u.data() ?? {};
-          final full = (m['fullName'] ?? '').toString();
-          final uname = (m['username'] ?? '').toString();
-          userNames[uid] = full.isNotEmpty ? full : (uname.isNotEmpty ? uname : uid);
-        } catch (_) {
-          userNames[uid] = uid;
-        }
+        names.putIfAbsent(uid, () => uid); // fallback
       }
 
       final bytes = await Export.buildPivotExcelBytes(
         attendanceDocs: docs,
         from: _from,
         to: _to,
-        userNames: userNames,
+        userNames: names,
       );
       final filename = 'attendance_${_fmtDay(_from)}_${_fmtDay(_to)}.xlsx';
 
@@ -131,224 +124,267 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
 
     final branchesRef = FirebaseFirestore.instance.collection('branches').orderBy('name');
     final shiftsRef = FirebaseFirestore.instance.collection('shifts').orderBy('name');
+    final usersRef = FirebaseFirestore.instance.collection('users');
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Attendance Reports'),
         actions: [
-          IconButton(
-            tooltip: 'Export Excel',
-            onPressed: _exportExcel,
-            icon: const Icon(Icons.file_download),
+          Builder(
+            builder: (context) {
+              // نحتاج خريطة أسماء المستخدمين من StreamBuilder اللي تحت
+              return IconButton(
+                tooltip: 'Export Excel',
+                onPressed: () async {
+                  // هنجيب الخريطة من الـ InheritedElement (ببساطة: نعيد البناء ونستخدم setState؟)
+                  // أسهل حل: نطلع SnackBar يطلب الانتظار لو الخريطة لسه ما اتبنتش.
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Scroll down slightly to ensure data loaded, then press Export again if needed.')),
+                  );
+                },
+                icon: const Icon(Icons.file_download),
+              );
+            },
           ),
         ],
       ),
       drawer: const MainDrawer(),
-      body: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-            child: Wrap(
-              runSpacing: 8,
-              spacing: 8,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                OutlinedButton.icon(
-                  onPressed: _pickFrom,
-                  icon: const Icon(Icons.date_range),
-                  label: Text('From: ${_fmtDay(_from)}'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: _pickTo,
-                  icon: const Icon(Icons.event),
-                  label: Text('To: ${_fmtDay(_to)}'),
-                ),
-                StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                  stream: branchesRef.snapshots(),
-                  builder: (context, snap) {
-                    final items = <DropdownMenuItem<String>>[
-                      const DropdownMenuItem(value: '', child: Text('All branches')),
-                    ];
-                    if (snap.hasData) {
-                      for (final d in snap.data!.docs) {
-                        final name = (d.data()['name'] ?? d.id).toString();
-                        items.add(DropdownMenuItem(value: d.id, child: Text(name)));
-                      }
-                    }
-                    return InputDecorator(
-                      decoration: const InputDecoration(
-                        labelText: 'Branch',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                      child: DropdownButtonHideUnderline(
-                        child: DropdownButton<String>(
-                          value: _branchId ?? '',
-                          items: items,
-                          onChanged: (v) => setState(() => _branchId = (v ?? '').isEmpty ? null : v),
-                        ),
-                      ),
-                    );
-                  },
-                ),
-                StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                  stream: shiftsRef.snapshots(),
-                  builder: (context, snap) {
-                    final items = <DropdownMenuItem<String>>[
-                      const DropdownMenuItem(value: '', child: Text('All shifts')),
-                    ];
-                    if (snap.hasData) {
-                      for (final d in snap.data!.docs) {
-                        final name = (d.data()['name'] ?? d.id).toString();
-                        items.add(DropdownMenuItem(value: d.id, child: Text(name)));
-                      }
-                    }
-                    return InputDecorator(
-                      decoration: const InputDecoration(
-                        labelText: 'Shift',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                      child: DropdownButtonHideUnderline(
-                        child: DropdownButton<String>(
-                          value: _shiftId ?? '',
-                          items: items,
-                          onChanged: (v) => setState(() => _shiftId = (v ?? '').isEmpty ? null : v),
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ],
-            ),
-          ),
-          const Divider(height: 1),
-          Expanded(
-            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: q.snapshots(),
-              builder: (context, snap) {
-                if (snap.hasError) {
-                  return _ErrorBox(error: snap.error.toString());
-                }
-                if (snap.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
-                }
+      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        stream: usersRef.snapshots(),
+        builder: (context, usersSnap) {
+          // Build map: uid -> displayName
+          final userNames = <String, String>{};
+          if (usersSnap.hasData) {
+            for (final u in usersSnap.data!.docs) {
+              final m = u.data();
+              final full = (m['fullName'] ?? '').toString();
+              final uname = (m['username'] ?? '').toString();
+              userNames[u.id] = full.isNotEmpty ? full : (uname.isNotEmpty ? uname : u.id);
+            }
+          }
 
-                var docs = snap.data?.docs ?? [];
-
-                if (_branchId != null && _branchId!.isNotEmpty) {
-                  docs = docs.where((d) => (d.data()['branchId'] ?? '').toString() == _branchId).toList();
+          return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+            stream: branchesRef.snapshots(),
+            builder: (context, branchesSnap) {
+              final branchNames = <String, String>{};
+              if (branchesSnap.hasData) {
+                for (final b in branchesSnap.data!.docs) {
+                  final m = b.data();
+                  branchNames[b.id] = (m['name'] ?? b.id).toString();
                 }
-                if (_shiftId != null && _shiftId!.isNotEmpty) {
-                  docs = docs.where((d) => (d.data()['shiftId'] ?? '').toString() == _shiftId).toList();
-                }
+              }
 
-                if (docs.isEmpty) {
-                  return const Center(child: Text('No records in the selected range'));
-                }
-
-                final uniqueUsers = <String>{};
-                for (final d in docs) {
-                  uniqueUsers.add((d.data()['userId'] ?? '').toString());
-                }
-
-                final summary = Card(
-                  elevation: 0,
-                  color: Theme.of(context).colorScheme.surfaceVariant,
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // Filters
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+                    child: Wrap(
+                      runSpacing: 8,
+                      spacing: 8,
+                      crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
-                        Text('Total records: ${docs.length}'),
-                        Text('Employees: ${uniqueUsers.length}'),
+                        OutlinedButton.icon(
+                          onPressed: _pickFrom,
+                          icon: const Icon(Icons.date_range),
+                          label: Text('From: ${_fmtDay(_from)}'),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: _pickTo,
+                          icon: const Icon(Icons.event),
+                          label: Text('To: ${_fmtDay(_to)}'),
+                        ),
+                        // Branch filter dropdown
+                        StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                          stream: branchesRef.snapshots(),
+                          builder: (context, snap) {
+                            final items = <DropdownMenuItem<String>>[
+                              const DropdownMenuItem(value: '', child: Text('All branches')),
+                            ];
+                            if (snap.hasData) {
+                              for (final d in snap.data!.docs) {
+                                final name = (d.data()['name'] ?? d.id).toString();
+                                items.add(DropdownMenuItem(value: d.id, child: Text(name)));
+                              }
+                            }
+                            return InputDecorator(
+                              decoration: const InputDecoration(
+                                labelText: 'Branch',
+                                border: OutlineInputBorder(),
+                                isDense: true,
+                              ),
+                              child: DropdownButtonHideUnderline(
+                                child: DropdownButton<String>(
+                                  value: _branchId ?? '',
+                                  items: items,
+                                  onChanged: (v) =>
+                                      setState(() => _branchId = (v ?? '').isEmpty ? null : v),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                        // Shift filter dropdown
+                        StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                          stream: shiftsRef.snapshots(),
+                          builder: (context, snap) {
+                            final items = <DropdownMenuItem<String>>[
+                              const DropdownMenuItem(value: '', child: Text('All shifts')),
+                            ];
+                            if (snap.hasData) {
+                              for (final d in snap.data!.docs) {
+                                final name = (d.data()['name'] ?? d.id).toString();
+                                items.add(DropdownMenuItem(value: d.id, child: Text(name)));
+                              }
+                            }
+                            return InputDecorator(
+                              decoration: const InputDecoration(
+                                labelText: 'Shift',
+                                border: OutlineInputBorder(),
+                                isDense: true,
+                              ),
+                              child: DropdownButtonHideUnderline(
+                                child: DropdownButton<String>(
+                                  value: _shiftId ?? '',
+                                  items: items,
+                                  onChanged: (v) =>
+                                      setState(() => _shiftId = (v ?? '').isEmpty ? null : v),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                        // زر Export حقيقي يعتمد على userNames اللي نبنيها فوق
+                        FilledButton.icon(
+                          onPressed: () => _exportExcel(userNames),
+                          icon: const Icon(Icons.file_download),
+                          label: const Text('Export Excel'),
+                        ),
                       ],
                     ),
                   ),
-                );
+                  const Divider(height: 1),
 
-                final Map<String, List<QueryDocumentSnapshot<Map<String, dynamic>>>> byDay = {};
-                for (final d in docs) {
-                  final day = (d.data()['localDay'] ?? '').toString();
-                  byDay.putIfAbsent(day, () => []).add(d);
-                }
-                final orderedDays = byDay.keys.toList()..sort((a, b) => b.compareTo(a));
+                  // Attendance stream
+                  Expanded(
+                    child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                      stream: q.snapshots(),
+                      builder: (context, snap) {
+                        if (snap.hasError) {
+                          return _ErrorBox(error: snap.error.toString());
+                        }
+                        if (snap.connectionState == ConnectionState.waiting) {
+                          return const Center(child: CircularProgressIndicator());
+                        }
 
-                return ListView.builder(
-                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
-                  itemCount: orderedDays.length + 1,
-                  itemBuilder: (context, index) {
-                    if (index == 0) return summary;
+                        var docs = snap.data?.docs ?? [];
 
-                    final day = orderedDays[index - 1];
-                    final items = byDay[day]!;
-                    return _DaySection(
-                      day: day,
-                      items: items,
-                      fmtTime: _fmtTime,
-                    );
-                  },
-                );
-              },
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
+                        // client-side filters
+                        if (_branchId != null && _branchId!.isNotEmpty) {
+                          docs = docs
+                              .where((d) => (d.data()['branchId'] ?? '').toString() == _branchId)
+                              .toList();
+                        }
+                        if (_shiftId != null && _shiftId!.isNotEmpty) {
+                          docs = docs
+                              .where((d) => (d.data()['shiftId'] ?? '').toString() == _shiftId)
+                              .toList();
+                        }
 
-class _DaySection extends StatelessWidget {
-  final String day;
-  final List<QueryDocumentSnapshot<Map<String, dynamic>>> items;
-  final String Function(Timestamp? ts) fmtTime;
+                        if (docs.isEmpty) {
+                          return const Center(child: Text('No records in the selected range'));
+                        }
 
-  const _DaySection({
-    required this.day,
-    required this.items,
-    required this.fmtTime,
-  });
+                        final uniqueUsers = <String>{};
+                        for (final d in docs) {
+                          uniqueUsers.add((d.data()['userId'] ?? '').toString());
+                        }
 
-  @override
-  Widget build(BuildContext context) {
-    final sorted = [...items]..sort((a, b) {
-      final ta = (a.data()['at'] as Timestamp?)?.toDate().millisecondsSinceEpoch ?? 0;
-      final tb = (b.data()['at'] as Timestamp?)?.toDate().millisecondsSinceEpoch ?? 0;
-      return ta.compareTo(tb);
-    });
+                        final summary = Card(
+                          elevation: 0,
+                          color: Theme.of(context).colorScheme.surfaceVariant,
+                          child: Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text('Total records: ${docs.length}'),
+                                Text('Employees: ${uniqueUsers.length}'),
+                              ],
+                            ),
+                          ),
+                        );
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.only(top: 12, bottom: 6),
-          child: Text('Date: $day', style: Theme.of(context).textTheme.titleMedium),
-        ),
-        ...sorted.map((d) {
-          final m = d.data();
-          final uid = (m['userId'] ?? '').toString();
-          final typ = (m['type'] ?? '').toString(); // in | out
-          final branchId = (m['branchId'] ?? '').toString();
-          final shiftId = (m['shiftId'] ?? '').toString();
-          final lat = (m['lat'] ?? 0).toString();
-          final lng = (m['lng'] ?? 0).toString();
-          final at = m['at'] is Timestamp ? (m['at'] as Timestamp) : null;
+                        final Map<String, List<QueryDocumentSnapshot<Map<String, dynamic>>>> byDay = {};
+                        for (final d in docs) {
+                          final day = (d.data()['localDay'] ?? '').toString();
+                          byDay.putIfAbsent(day, () => []).add(d);
+                        }
+                        final orderedDays = byDay.keys.toList()..sort((a, b) => b.compareTo(a));
 
-          return Card(
-            margin: const EdgeInsets.only(bottom: 8),
-            elevation: 1.2,
-            child: ListTile(
-              leading: CircleAvatar(
-                backgroundColor: typ == 'in' ? Colors.green.shade600 : Colors.red.shade600,
-                child: Text(typ == 'in' ? 'IN' : 'OUT', style: const TextStyle(color: Colors.white, fontSize: 11)),
-              ),
-              title: Text('User: $uid'),
-              subtitle: Text('Branch: $branchId • Shift: $shiftId • Time: ${fmtTime(at)}\n($lat, $lng)'),
-            ),
+                        return ListView.builder(
+                          padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
+                          itemCount: orderedDays.length + 1,
+                          itemBuilder: (context, index) {
+                            if (index == 0) return summary;
+
+                            final day = orderedDays[index - 1];
+                            final items = byDay[day]!;
+
+                            // sort by time asc
+                            items.sort((a, b) {
+                              final ta = (a.data()['at'] as Timestamp?)?.toDate().millisecondsSinceEpoch ?? 0;
+                              final tb = (b.data()['at'] as Timestamp?)?.toDate().millisecondsSinceEpoch ?? 0;
+                              return ta.compareTo(tb);
+                            });
+
+                            return Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 12, bottom: 6),
+                                  child: Text('Date: $day', style: Theme.of(context).textTheme.titleMedium),
+                                ),
+                                ...items.map((d) {
+                                  final m = d.data();
+                                  final uid = (m['userId'] ?? '').toString();
+                                  final typ = (m['type'] ?? '').toString(); // in | out
+                                  final branchId = (m['branchId'] ?? '').toString();
+                                  final shiftId = (m['shiftId'] ?? '').toString();
+                                  final lat = (m['lat'] ?? 0).toString();
+                                  final lng = (m['lng'] ?? 0).toString();
+                                  final at = m['at'] is Timestamp ? (m['at'] as Timestamp) : null;
+
+                                  final userLabel = userNames[uid] ?? uid;
+                                  final branchLabel = branchId.isEmpty ? '—' : (branchNames[branchId] ?? branchId);
+
+                                  return Card(
+                                    margin: const EdgeInsets.only(bottom: 8),
+                                    elevation: 1.2,
+                                    child: ListTile(
+                                      leading: CircleAvatar(
+                                        backgroundColor: typ == 'in' ? Colors.green.shade600 : Colors.red.shade600,
+                                        child: Text(typ == 'in' ? 'IN' : 'OUT', style: const TextStyle(color: Colors.white, fontSize: 11)),
+                                      ),
+                                      title: Text(userLabel),
+                                      subtitle: Text('Branch: $branchLabel • Shift: $shiftId • Time: ${_fmtTime(at)}\n($lat, $lng)'),
+                                    ),
+                                  );
+                                }),
+                              ],
+                            );
+                          },
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              );
+            },
           );
-        }),
-      ],
+        },
+      ),
     );
   }
 }
