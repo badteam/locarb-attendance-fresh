@@ -5,7 +5,12 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
+import 'screens/dashboard_screen.dart';
 import 'screens/attendance_report_screen.dart';
+import 'screens/users_screen.dart';
+import 'screens/branches_screen.dart';
+import 'screens/admin_panel_screen.dart';
+import 'screens/employee_home_screen.dart';
 
 Future<void> _initFirebase() async {
   if (kIsWeb) {
@@ -21,8 +26,7 @@ Future<void> _initFirebase() async {
   } else {
     await Firebase.initializeApp();
   }
-  FirebaseFirestore.instance.settings =
-      const Settings(persistenceEnabled: true);
+  FirebaseFirestore.instance.settings = const Settings(persistenceEnabled: true);
 }
 
 void main() async {
@@ -39,13 +43,17 @@ class App extends StatelessWidget {
       title: 'LoCarb Attendance',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme:
-            ColorScheme.fromSeed(seedColor: const Color(0xFF00B894)),
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF00B894)),
         useMaterial3: true,
       ),
       home: const RootGate(),
       routes: {
+        '/': (_) => const DashboardScreen(),
         '/reports': (_) => const AttendanceReportScreen(),
+        '/users': (_) => const UsersScreen(),
+        '/branches': (_) => const BranchesScreen(),
+        '/admin': (_) => const AdminPanelScreen(),
+        '/employee': (_) => const EmployeeHomeScreen(),
       },
     );
   }
@@ -61,11 +69,38 @@ class RootGate extends StatelessWidget {
       builder: (context, snap) {
         final user = snap.data;
         if (snap.connectionState == ConnectionState.waiting) {
-          return const Scaffold(
-              body: Center(child: CircularProgressIndicator()));
+          return const Scaffold(body: Center(child: CircularProgressIndicator()));
         }
         if (user == null) return const _LoginScreen();
-        return const AttendanceReportScreen();
+
+        return FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+          future: FirebaseFirestore.instance.doc('users/${user.uid}').get(),
+          builder: (context, us) {
+            if (us.connectionState == ConnectionState.waiting) {
+              return const Scaffold(body: Center(child: CircularProgressIndicator()));
+            }
+            final data = us.data?.data() ?? {};
+            final status = (data['status'] ?? 'pending').toString();
+
+            if (status != 'approved') {
+              return Scaffold(
+                appBar: AppBar(title: const Text('Waiting Approval')),
+                body: Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Text(
+                      'Your account status is "$status". Please wait for admin approval.',
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+              );
+            }
+
+            // افتح الـ Dashboard كبداية
+            return const DashboardScreen();
+          },
+        );
       },
     );
   }
@@ -102,12 +137,10 @@ class _LoginScreenState extends State<_LoginScreen> {
     try {
       final cred = await FirebaseAuth.instance
           .createUserWithEmailAndPassword(
-        email: _email.text.trim(),
-        password: _pass.text,
-      );
-      await FirebaseFirestore.instance
-          .doc('users/${cred.user!.uid}')
-          .set({
+            email: _email.text.trim(),
+            password: _pass.text,
+          );
+      await FirebaseFirestore.instance.doc('users/${cred.user!.uid}').set({
         'email': _email.text.trim(),
         'username': _email.text.split('@').first,
         'fullName': _email.text.split('@').first,
@@ -135,28 +168,20 @@ class _LoginScreenState extends State<_LoginScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text('LoCarb Attendance',
-                      style: Theme.of(context).textTheme.titleLarge),
+                  Text('LoCarb Attendance', style: Theme.of(context).textTheme.titleLarge),
                   const SizedBox(height: 12),
                   TextField(
                     controller: _email,
-                    decoration: const InputDecoration(
-                      labelText: 'Email',
-                      border: OutlineInputBorder(),
-                    ),
+                    decoration: const InputDecoration(labelText: 'Email', border: OutlineInputBorder()),
                   ),
                   const SizedBox(height: 12),
                   TextField(
                     controller: _pass,
                     obscureText: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Password',
-                      border: OutlineInputBorder(),
-                    ),
+                    decoration: const InputDecoration(labelText: 'Password', border: OutlineInputBorder()),
                   ),
                   const SizedBox(height: 12),
-                  if (_error != null)
-                    Text(_error!, style: const TextStyle(color: Colors.red)),
+                  if (_error != null) Text(_error!, style: const TextStyle(color: Colors.red)),
                   const SizedBox(height: 12),
                   Row(
                     children: [
@@ -164,12 +189,7 @@ class _LoginScreenState extends State<_LoginScreen> {
                         child: FilledButton(
                           onPressed: _loading ? null : _signIn,
                           child: _loading
-                              ? const SizedBox(
-                                  height: 18,
-                                  width: 18,
-                                  child: CircularProgressIndicator(
-                                      strokeWidth: 2),
-                                )
+                              ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2))
                               : const Text('Sign in'),
                         ),
                       ),
