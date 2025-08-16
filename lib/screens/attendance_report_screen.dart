@@ -1,9 +1,11 @@
 import 'dart:typed_data';
-import 'dart:html' as html show AnchorElement, Blob, Url; // Web only
+import 'dart:html' as html; // ← مهم: نستخدم namespace html.document/Url/AnchorElement/Blob
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
-import '../utils/export.dart';
+
+import '../utils/export.dart'; // يحتوي على Export.buildPivotExcelBytes (excel: 2.1.0)
 
 class AttendanceReportScreen extends StatefulWidget {
   const AttendanceReportScreen({super.key});
@@ -48,7 +50,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     if (d != null) setState(() => _to = DateTime(d.year, d.month, d.day));
   }
 
-  // ====== Export handler ======
+  // ====== Export handler (Excel) ======
   Future<void> _exportExcel() async {
     try {
       Query<Map<String, dynamic>> q = FirebaseFirestore.instance
@@ -73,7 +75,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
         return;
       }
 
-      // build user names map
+      // map: uid -> displayName
       final uidSet = <String>{};
       for (final d in docs) {
         final uid = (d.data()['userId'] ?? '').toString();
@@ -101,12 +103,11 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
       final filename = 'attendance_${_fmtDay(_from)}_${_fmtDay(_to)}.xlsx';
 
       if (kIsWeb) {
+        // تنزيل مباشر على الويب
         final blob = html.Blob([Uint8List.fromList(bytes)]);
         final url = html.Url.createObjectUrlFromBlob(blob);
-        final anchor = html.AnchorElement(href: url)
-          ..download = filename
-          ..style.display = 'none';
-        html.document.body!.children.add(anchor);
+        final anchor = html.AnchorElement(href: url)..download = filename;
+        html.document.body!.children.add(anchor); // ← تم إصلاح document (html.document)
         anchor.click();
         html.document.body!.children.remove(anchor);
         html.Url.revokeObjectUrl(url);
@@ -326,7 +327,7 @@ class _DaySection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // ترتيب حسب الوقت تصاعديًا لليوم
+    // sort by time asc
     final sorted = [...items]..sort((a, b) {
       final ta = (a.data()['at'] as Timestamp?)?.toDate().millisecondsSinceEpoch ?? 0;
       final tb = (b.data()['at'] as Timestamp?)?.toDate().millisecondsSinceEpoch ?? 0;
