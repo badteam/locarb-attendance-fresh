@@ -1,396 +1,339 @@
+import 'dart:async';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+
 import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
-import 'firebase_options.dart';
-import 'services/auth_service.dart';
-import 'services/db_init.dart';
-import 'services/attendance_service.dart';
+// شاشاتك (عدّل المسارات لو مختلفة)
+import 'screens/attendance_report_screen.dart'; // شاشة التقارير للأدمن
+// import 'screens/user_home_screen.dart';       // شاشة الموظف (لو عندك)
+// import 'screens/admin_dashboard.dart';        // لوحة الأدمن (لو عندك)
 
-import 'screens/admin_dashboard.dart'; // لوحة الأدمن (تبويبات: المستخدمون + الفروع)
+// ============= Firebase init =============
+Future<void> _initFirebase() async {
+  if (kIsWeb) {
+    // الويب: نمرّر FirebaseOptions يدويًا (من بيانات مشروعك)
+    const webOptions = FirebaseOptions(
+      apiKey: "AIzaSyDSKUx-6RtCuLiGcnMVko0vAKvL9ik7hSI",
+      authDomain: "locarb-attendance-v2.firebaseapp.com",
+      projectId: "locarb-attendance-v2",
+      storageBucket: "locarb-attendance-v2.firebasestorage.app",
+      messagingSenderId: "953944468274",
+      appId: "1:953944468274:web:319947e61b55f1341b452b",
+    );
+    await Firebase.initializeApp(options: webOptions);
+  } else {
+    // الموبايل/ديسكتوب:
+    // لو عندك firebase_options.dart (FlutterFire CLI) استخدم:
+    // await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+    // غير كده، هنستدعي init الافتراضي (لازم تكون مهيئ Android/iOS Gradle/Firebase JSON/Plist)
+    await Firebase.initializeApp();
+  }
 
-Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-  runApp(const LoCarbApp());
+  // إعدادات Firestore (اختياري)
+  FirebaseFirestore.instance.settings = const Settings(persistenceEnabled: true);
 }
 
-class LoCarbApp extends StatelessWidget {
-  const LoCarbApp({super.key});
+// دالة تجيب دور المستخدم وحالته من وثيقة users/{uid}
+Future<({String role, String status, String displayName})> _loadUserRole(String uid) async {
+  try {
+    final doc = await FirebaseFirestore.instance.doc('users/$uid').get();
+    final data = doc.data() ?? {};
+    final role = (data['role'] ?? 'employee').toString();     // admin | manager | employee
+    final status = (data['status'] ?? 'pending').toString();  // approved | pending | rejected
+    final dn = (data['fullName'] ?? data['username'] ?? uid).toString();
+    return (role: role, status: status, displayName: dn);
+  } catch (_) {
+    return (role: 'employee', status: 'pending', displayName: uid);
+  }
+}
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await _initFirebase();
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'LoCarb Attendance',
       theme: ThemeData(
-        colorSchemeSeed: const Color(0xFFFF8A00), // لون لوكارب
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF00B894)), // أخضر قريب من هوية لوكارب
         useMaterial3: true,
       ),
-      routes: {
-        '/login'  : (_) => const LoginScreen(),
-        '/signup' : (_) => const SignUpScreen(),
-        '/home'   : (_) => const HomeScreen(),
-        '/pending': (_) => const PendingScreen(),
-        '/admin'  : (_) => const AdminDashboard(),
-      },
-      home: const RootRouter(),
       debugShowCheckedModeBanner: false,
-    );
-  }
-}
-
-/// يوجّه حسب حالة المصادقة ثم يشغّل تهيئة قاعدة البيانات
-class RootRouter extends StatelessWidget {
-  const RootRouter({super.key});
-  @override
-  Widget build(BuildContext context) {
-    return StreamBuilder<User?>(
-      stream: FirebaseAuth.instance.authStateChanges(),
-      builder: (context, snap) {
-        if (snap.connectionState == ConnectionState.waiting) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
-        }
-        final user = snap.data;
-        if (user == null) return const OnboardingScreen();
-        return InitGate(user: user);
+      home: const RootGate(),
+      // لو عندك Routes زيادة عرفها هنا
+      routes: {
+        '/reports': (_) => const AttendanceReportScreen(),
       },
     );
   }
 }
 
-/// يشغّل التهيئة (إنشاء المجموعات الأساسية) ثم يوجّه حسب حالة الحساب
-class InitGate extends StatefulWidget {
-  final User user;
-  const InitGate({super.key, required this.user});
+/// RootGate:
+/// - لو المستخدم مش مسجل دخول: يفتح شاشة تسجيل الدخول البسيطة هنا
+/// - لو مسجل: يجيب دوره من Firestore ويوجه حسب الدور/الحالة
+class RootGate extends StatefulWidget {
+  const RootGate({super.key});
 
   @override
-  State<InitGate> createState() => _InitGateState();
+  State<RootGate> createState() => _RootGateState();
 }
 
-class _InitGateState extends State<InitGate> {
-  bool _done = false;
-  String? _error;
+class _RootGateState extends State<RootGate> {
+  StreamSubscription<User?>? _sub;
+  User? _user;
+  ({String role, String status, String displayName})? _profile;
+  bool _loadingProfile = false;
 
   @override
   void initState() {
     super.initState();
-    _bootstrap();
-  }
-
-  Future<void> _bootstrap() async {
-    try {
-      final email = widget.user.email ?? '';
-      final username = email.isNotEmpty ? email.split('@').first : widget.user.uid;
-
-      // 1) تأكيد مستند المستخدم لو مش موجود
-      await DBInit.ensureCurrentUserDoc(
-        uid: widget.user.uid,
-        username: username,
-        email: email,
-        fullName: '',
-      );
-
-      // 2) إنشاء الكوليكشنز الأساسية لو فاضية
-      await DBInit.ensureBaseCollections();
-
-      if (mounted) setState(() => _done = true);
-    } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (_error != null) {
-      return Scaffold(body: Center(child: Text('Init error: $_error')));
-    }
-    if (!_done) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
-
-    // بعد التهيئة: حمّل حالة المستخدم
-    return FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      future: FirebaseFirestore.instance.doc('users/${widget.user.uid}').get(),
-      builder: (context, snap) {
-        if (!snap.hasData) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
-        }
-        final data = snap.data!.data() ?? {};
-        final status = (data['status'] ?? 'pending') as String;
-        if (status == 'approved') return const HomeScreen();
-        return const PendingScreen();
-      },
-    );
-  }
-}
-
-class OnboardingScreen extends StatelessWidget {
-  const OnboardingScreen({super.key});
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: Center(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          const Icon(Icons.verified_user, size: 96),
-          const SizedBox(height: 12),
-          const Text('مرحبًا بك في LoCarb Attendance',
-              textDirection: TextDirection.rtl, textAlign: TextAlign.center),
-          const SizedBox(height: 6),
-          const Text('سجّل دخولك أو أنشئ حساب جديد',
-              textDirection: TextDirection.rtl, textAlign: TextAlign.center),
-          const SizedBox(height: 24),
-          FilledButton(
-            onPressed: () => Navigator.pushReplacementNamed(context, '/login'),
-            child: const Text('ابدأ', textDirection: TextDirection.rtl),
-          ),
-        ]),
-      ),
-    );
-  }
-}
-
-class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key});
-  @override
-  State<LoginScreen> createState() => _LoginScreenState();
-}
-class _LoginScreenState extends State<LoginScreen> {
-  final username = TextEditingController();
-  final password = TextEditingController();
-  String? error; bool loading = false;
-
-  Future<void> _login() async {
-    setState(() { loading = true; error = null; });
-    try {
-      await AuthService.signIn(username.text, password.text);
-      if (!mounted) return;
-      Navigator.pushReplacementNamed(context, '/home');
-    } on FirebaseAuthException catch (e) {
-      setState(() => error = e.message);
-    } catch (e) {
-      setState(() => error = e.toString());
-    } finally {
-      if (mounted) setState(() => loading = false);
-    }
-  }
-
-  @override
-  void dispose() { username.dispose(); password.dispose(); super.dispose(); }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('تسجيل الدخول')),
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 420),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              TextField(controller: username, decoration: const InputDecoration(labelText: 'اسم المستخدم')),
-              const SizedBox(height: 8),
-              TextField(controller: password, decoration: const InputDecoration(labelText: 'كلمة المرور'), obscureText: true),
-              const SizedBox(height: 12),
-              FilledButton(onPressed: loading? null : _login,
-                child: loading? const CircularProgressIndicator() : const Text('دخول')),
-              TextButton(onPressed: ()=> Navigator.pushNamed(context, '/signup'),
-                child: const Text('إنشاء حساب جديد')),
-              if (error != null) Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(error!, style: const TextStyle(color: Colors.red))),
-            ]),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class SignUpScreen extends StatefulWidget {
-  const SignUpScreen({super.key});
-  @override
-  State<SignUpScreen> createState() => _SignUpScreenState();
-}
-class _SignUpScreenState extends State<SignUpScreen> {
-  final username = TextEditingController();
-  final password = TextEditingController();
-  final fullName = TextEditingController();
-  String? error; bool loading = false;
-
-  Future<void> _signup() async {
-    setState(() { loading = true; error = null; });
-    try {
-      final cred = await AuthService.signUp(username.text, password.text);
-      final uid = cred.user!.uid;
-
-      await FirebaseFirestore.instance.doc('users/$uid').set({
-        'uid': uid,
-        'username': username.text.trim(),
-        'email': cred.user!.email,
-        'fullName': fullName.text.trim().isEmpty ? username.text.trim() : fullName.text.trim(),
-        'role': 'employee',
-        'status': 'pending',
-        'createdAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('تم إنشاء الحساب (بانتظار موافقة الأدمن)')),
-      );
-      Navigator.pushReplacementNamed(context, '/home');
-    } on FirebaseAuthException catch (e) {
-      setState(() => error = e.message);
-    } catch (e) {
-      setState(() => error = e.toString());
-    } finally {
-      if (mounted) setState(() => loading = false);
-    }
-  }
-
-  @override
-  void dispose() { username.dispose(); password.dispose(); fullName.dispose(); super.dispose(); }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('إنشاء حساب')),
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 420),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              TextField(controller: username, decoration: const InputDecoration(labelText: 'اسم المستخدم')),
-              const SizedBox(height: 8),
-              TextField(controller: password, decoration: const InputDecoration(labelText: 'كلمة المرور'), obscureText: true),
-              const SizedBox(height: 8),
-              TextField(controller: fullName, decoration: const InputDecoration(labelText: 'الاسم الكامل')),
-              const SizedBox(height: 12),
-              FilledButton(onPressed: loading? null : _signup,
-                child: loading? const CircularProgressIndicator() : const Text('تسجيل')),
-              if (error != null) Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(error!, style: const TextStyle(color: Colors.red))),
-            ]),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class PendingScreen extends StatelessWidget {
-  const PendingScreen({super.key});
-  @override
-  Widget build(BuildContext context) {
-    return const Scaffold(
-      body: Center(child: Text('تم إنشاء الحساب، بانتظار موافقة الأدمن', textDirection: TextDirection.rtl)),
-    );
-  }
-}
-
-class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
-  @override
-  State<HomeScreen> createState() => _HomeScreenState();
-}
-
-class _HomeScreenState extends State<HomeScreen> {
-  bool? isAdmin;
-  String? status;
-  String message = '';
-  bool loading = false;
-
-  Future<void> _loadRole() async {
-    final uid = FirebaseAuth.instance.currentUser!.uid;
-    final snap = await FirebaseFirestore.instance.doc('users/$uid').get();
-    setState(() {
-      isAdmin = (snap.data()?['role'] ?? '') == 'admin';
-      status  = (snap.data()?['status'] ?? 'pending');
+    _sub = FirebaseAuth.instance.authStateChanges().listen((u) async {
+      setState(() {
+        _user = u;
+        _profile = null;
+        _loadingProfile = u != null;
+      });
+      if (u != null) {
+        final p = await _loadUserRole(u.uid);
+        if (!mounted) return;
+        setState(() {
+          _profile = p;
+          _loadingProfile = false;
+        });
+      }
     });
   }
 
   @override
-  void initState() {
-    super.initState();
-    _loadRole();
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
   }
 
-  Future<void> _do(bool isIn) async {
-    setState(() { loading = true; message = ''; });
+  @override
+  Widget build(BuildContext context) {
+    // 1) لسه بنجيب حالة تسجيل الدخول
+    if (_user == null) {
+      return const LoginScreen(); // شاشة تسجيل دخول بسيطة
+    }
+
+    // 2) بنحمّل بيانات الدور/الحالة
+    if (_loadingProfile || _profile == null) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    final role = _profile!.role;
+    final status = _profile!.status;
+    final name = _profile!.displayName;
+
+    // 3) حالات الموافقة
+    if (status != 'approved' && role != 'admin') {
+      // الموظفين والمديرين ينتظروا موافقة
+      return WaitingApprovalScreen(displayName: name, status: status);
+    }
+
+    // 4) التوجيه حسب الدور
+    if (role == 'admin' || role == 'manager') {
+      // لوحة الأدمن/المشرف — هنا موجّه مؤقتًا لصفحة التقارير مباشرة
+      // بدّلها لشاشة Dashboard إذا عندك شاشة منفصلة
+      return const AttendanceReportScreen();
+    } else {
+      // شاشة الموظف (اكتب شاشتك أو حاليًا Placeholder)
+      return EmployeeHomeScreen(displayName: name);
+    }
+  }
+}
+
+// ===================== Login (بسيطة) =====================
+class LoginScreen extends StatefulWidget {
+  const LoginScreen({super.key});
+
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
+// تسجيل دخول ببريد/باسورد + زر "تسجيل حساب جديد" (username/password بديله بالإيميل)
+class _LoginScreenState extends State<LoginScreen> {
+  final _email = TextEditingController();
+  final _pass = TextEditingController();
+  bool _busy = false;
+  String? _error;
+
+  Future<void> _signIn() async {
+    setState(() { _busy = true; _error = null; });
     try {
-      await AttendanceService.checkInOut(isCheckIn: isIn);
-      setState(() => message = isIn ? 'تم تسجيل الدخول ✅' : 'تم تسجيل الانصراف ✅');
+      await FirebaseAuth.instance.signInWithEmailAndPassword(
+        email: _email.text.trim(),
+        password: _pass.text,
+      );
+    } on FirebaseAuthException catch (e) {
+      setState(() => _error = e.message);
     } catch (e) {
-      setState(() => message = 'خطأ: $e');
+      setState(() => _error = e.toString());
     } finally {
-      setState(() => loading = false);
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _signUp() async {
+    // تسجيل جديد بسيط بالإيميل كبديلاً عن username — يفضل لاحقًا تعمل شاشة Signup مخصصة
+    if (_email.text.trim().isEmpty || _pass.text.isEmpty) {
+      setState(() => _error = 'Please enter email & password');
+      return;
+    }
+    setState(() { _busy = true; _error = null; });
+    try {
+      final cred = await FirebaseAuth.instance.createUserWithEmailAndPassword(
+        email: _email.text.trim(),
+        password: _pass.text,
+      );
+      // إنشاء وثيقة المستخدم في Firestore بحالة pending
+      final uid = cred.user!.uid;
+      await FirebaseFirestore.instance.doc('users/$uid').set({
+        'email': _email.text.trim(),
+        'username': _email.text.split('@').first,
+        'fullName': _email.text.split('@').first,
+        'role': 'employee',     // الموظّف افتراضيًا
+        'status': 'pending',    // يحتاج موافقة الأدمن
+        'createdAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } on FirebaseAuthException catch (e) {
+      setState(() => _error = e.message);
+    } catch (e) {
+      setState(() => _error = e.toString());
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final user = FirebaseAuth.instance.currentUser;
+    final scheme = Theme.of(context).colorScheme;
+    return Scaffold(
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 380),
+          child: Card(
+            elevation: 2,
+            margin: const EdgeInsets.all(16),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('LoCarb Attendance', style: Theme.of(context).textTheme.titleLarge),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _email,
+                    decoration: const InputDecoration(
+                      labelText: 'Email',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _pass,
+                    obscureText: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Password',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  if (_error != null)
+                    Text(_error!, style: TextStyle(color: scheme.error)),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: FilledButton(
+                          onPressed: _busy ? null : _signIn,
+                          child: _busy
+                              ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                              : const Text('Sign in'),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: _busy ? null : _signUp,
+                          child: const Text('Create account'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
 
+// ===================== Waiting Approval =====================
+class WaitingApprovalScreen extends StatelessWidget {
+  final String displayName;
+  final String status; // pending / rejected
+  const WaitingApprovalScreen({super.key, required this.displayName, required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    final text = status == 'rejected'
+        ? 'Your account was rejected. Please contact admin.'
+        : 'Hi $displayName — Your account is pending admin approval.';
+    return Scaffold(
+      appBar: AppBar(title: const Text('Waiting Approval')),
+      body: Center(child: Text(text, textAlign: TextAlign.center)),
+    );
+  }
+}
+
+// ===================== Employee Home (Placeholder) =====================
+class EmployeeHomeScreen extends StatelessWidget {
+  final String displayName;
+  const EmployeeHomeScreen({super.key, required this.displayName});
+
+  @override
+  Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('الرئيسية'),
+        title: Text('Welcome, $displayName'),
         actions: [
-          if (isAdmin == true)
-            IconButton(
-              tooltip: 'لوحة الأدمن',
-              onPressed: () => Navigator.pushNamed(context, '/admin'),
-              icon: const Icon(Icons.admin_panel_settings),
-            ),
           IconButton(
-            onPressed: () async {
-              await AuthService.signOut();
-              if (context.mounted) Navigator.pushReplacementNamed(context, '/login');
-            },
+            tooltip: 'Sign out',
+            onPressed: () => FirebaseAuth.instance.signOut(),
             icon: const Icon(Icons.logout),
           ),
         ],
       ),
       body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 420),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text('أهلًا ${user?.email ?? ''}', textDirection: TextDirection.rtl),
-                const SizedBox(height: 12),
-                if (status == 'approved') ...[
-                  if (loading)
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 16),
-                      child: CircularProgressIndicator(),
-                    )
-                  else
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        FilledButton(onPressed: () => _do(true), child: const Text('Check In')),
-                        const SizedBox(width: 12),
-                        OutlinedButton(onPressed: () => _do(false), child: const Text('Check Out')),
-                      ],
-                    ),
-                ] else
-                  const Text('حسابك بانتظار موافقة الأدمن', textDirection: TextDirection.rtl),
-                if (message.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 12),
-                    child: Text(
-                      message,
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: message.startsWith('خطأ') ? Colors.red : Colors.green),
-                    ),
-                  ),
-              ],
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('Employee Home (placeholder)'),
+            const SizedBox(height: 12),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pushNamed('/reports'),
+              child: const Text('Open Reports (admin only typically)'),
             ),
-          ),
+          ],
         ),
       ),
     );
