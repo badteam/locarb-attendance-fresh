@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
-import '../screens/branches_shifts_screen.dart';
-import '../screens/admin_users_screen.dart'; // 👈 جديد
 
+import '../screens/branches_shifts_screen.dart';
+import '../screens/admin_users_screen.dart';
+import '../screens/employee_home_screen.dart';
+import '../screens/attendance_report_screen.dart';
 
 class MainDrawer extends StatelessWidget {
   const MainDrawer({super.key});
@@ -21,15 +23,50 @@ class MainDrawer extends StatelessWidget {
               ),
             ),
 
+            // Employee Home (الحضور/الانصراف للموظف)
+            ListTile(
+              leading: const Icon(Icons.home_outlined),
+              title: const Text('Employee Home'),
+              onTap: () {
+                Navigator.of(context).pop();
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const EmployeeHomeScreen()),
+                );
+              },
+            ),
+
+            // إدارة المستخدمين (الأدمن)
+            ListTile(
+              leading: const Icon(Icons.people_alt_outlined),
+              title: const Text('Users'),
+              onTap: () {
+                Navigator.of(context).pop();
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const AdminUsersScreen()),
+                );
+              },
+            ),
+
+            // الفروع + الشفتات
             ListTile(
               leading: const Icon(Icons.storefront),
               title: const Text('Branches & Shifts'),
               onTap: () {
-                Navigator.of(context).pop(); // اغلق الدروار
+                Navigator.of(context).pop();
                 Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => const BranchesShiftsScreen(),
-                  ),
+                  MaterialPageRoute(builder: (_) => const BranchesShiftsScreen()),
+                );
+              },
+            ),
+
+            // التقارير
+            ListTile(
+              leading: const Icon(Icons.insert_chart_outlined),
+              title: const Text('Attendance Reports'),
+              onTap: () {
+                Navigator.of(context).pop();
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const AttendanceReportScreen()),
                 );
               },
             ),
