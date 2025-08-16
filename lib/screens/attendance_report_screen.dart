@@ -1,11 +1,12 @@
 import 'dart:typed_data';
-import 'dart:html' as html; // ← مهم: نستخدم namespace html.document/Url/AnchorElement/Blob
+import 'dart:html' as html;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
-import '../utils/export.dart'; // يحتوي على Export.buildPivotExcelBytes (excel: 2.1.0)
+import '../utils/export.dart';
+import '../widgets/main_drawer.dart';
 
 class AttendanceReportScreen extends StatefulWidget {
   const AttendanceReportScreen({super.key});
@@ -50,7 +51,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     if (d != null) setState(() => _to = DateTime(d.year, d.month, d.day));
   }
 
-  // ====== Export handler (Excel) ======
   Future<void> _exportExcel() async {
     try {
       Query<Map<String, dynamic>> q = FirebaseFirestore.instance
@@ -62,7 +62,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
       final snap = await q.get();
       var docs = snap.docs;
 
-      // client-side filters (لتفادي composite index)
       if (_branchId != null && _branchId!.isNotEmpty) {
         docs = docs.where((d) => (d.data()['branchId'] ?? '').toString() == _branchId).toList();
       }
@@ -71,11 +70,11 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
       }
       if (docs.isEmpty) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No records to export for this range')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('No records to export for this range')));
         return;
       }
 
-      // map: uid -> displayName
       final uidSet = <String>{};
       for (final d in docs) {
         final uid = (d.data()['userId'] ?? '').toString();
@@ -103,18 +102,17 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
       final filename = 'attendance_${_fmtDay(_from)}_${_fmtDay(_to)}.xlsx';
 
       if (kIsWeb) {
-        // تنزيل مباشر على الويب
         final blob = html.Blob([Uint8List.fromList(bytes)]);
         final url = html.Url.createObjectUrlFromBlob(blob);
         final anchor = html.AnchorElement(href: url)..download = filename;
-        html.document.body!.children.add(anchor); // ← تم إصلاح document (html.document)
+        html.document.body!.children.add(anchor);
         anchor.click();
         html.document.body!.children.remove(anchor);
         html.Url.revokeObjectUrl(url);
       } else {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Excel generated (mobile save/share can be added later).')),
+          const SnackBar(content: Text('Excel generated (mobile save/share later).')),
         );
       }
     } catch (e) {
@@ -145,10 +143,10 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
           ),
         ],
       ),
+      drawer: const MainDrawer(),
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Filters + summary line
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
             child: Wrap(
@@ -166,7 +164,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                   icon: const Icon(Icons.event),
                   label: Text('To: ${_fmtDay(_to)}'),
                 ),
-                // Branch
                 StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                   stream: branchesRef.snapshots(),
                   builder: (context, snap) {
@@ -189,14 +186,12 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                         child: DropdownButton<String>(
                           value: _branchId ?? '',
                           items: items,
-                          onChanged: (v) =>
-                              setState(() => _branchId = (v ?? '').isEmpty ? null : v),
+                          onChanged: (v) => setState(() => _branchId = (v ?? '').isEmpty ? null : v),
                         ),
                       ),
                     );
                   },
                 ),
-                // Shift
                 StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                   stream: shiftsRef.snapshots(),
                   builder: (context, snap) {
@@ -219,8 +214,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                         child: DropdownButton<String>(
                           value: _shiftId ?? '',
                           items: items,
-                          onChanged: (v) =>
-                              setState(() => _shiftId = (v ?? '').isEmpty ? null : v),
+                          onChanged: (v) => setState(() => _shiftId = (v ?? '').isEmpty ? null : v),
                         ),
                       ),
                     );
@@ -230,8 +224,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
             ),
           ),
           const Divider(height: 1),
-
-          // List + summary cards
           Expanded(
             child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
               stream: q.snapshots(),
@@ -245,16 +237,11 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
 
                 var docs = snap.data?.docs ?? [];
 
-                // client-side filters
                 if (_branchId != null && _branchId!.isNotEmpty) {
-                  docs = docs
-                      .where((d) => (d.data()['branchId'] ?? '').toString() == _branchId)
-                      .toList();
+                  docs = docs.where((d) => (d.data()['branchId'] ?? '').toString() == _branchId).toList();
                 }
                 if (_shiftId != null && _shiftId!.isNotEmpty) {
-                  docs = docs
-                      .where((d) => (d.data()['shiftId'] ?? '').toString() == _shiftId)
-                      .toList();
+                  docs = docs.where((d) => (d.data()['shiftId'] ?? '').toString() == _shiftId).toList();
                 }
 
                 if (docs.isEmpty) {
@@ -266,7 +253,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                   uniqueUsers.add((d.data()['userId'] ?? '').toString());
                 }
 
-                // summary card
                 final summary = Card(
                   elevation: 0,
                   color: Theme.of(context).colorScheme.surfaceVariant,
@@ -282,7 +268,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                   ),
                 );
 
-                // group by day (desc)
                 final Map<String, List<QueryDocumentSnapshot<Map<String, dynamic>>>> byDay = {};
                 for (final d in docs) {
                   final day = (d.data()['localDay'] ?? '').toString();
@@ -327,7 +312,6 @@ class _DaySection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // sort by time asc
     final sorted = [...items]..sort((a, b) {
       final ta = (a.data()['at'] as Timestamp?)?.toDate().millisecondsSinceEpoch ?? 0;
       final tb = (b.data()['at'] as Timestamp?)?.toDate().millisecondsSinceEpoch ?? 0;
