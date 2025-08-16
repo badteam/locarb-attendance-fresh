@@ -1,16 +1,11 @@
 // lib/utils/export.dart
-import 'dart:io' show File;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:excel/excel.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:intl/intl.dart';
 
-/// على الويب: هننزّل الملف مباشرة كـ download.
-/// على الموبايل/الديسكتوب: هنحفظ الملف ونشارك اللينك باستخدام share_plus.
-/// ملاحظة: لو بتستخدم Flutter Web فقط، الجزء الخاص بالموبايل يتجاهل.
+/// يبني Pivot: صف = موظف، عمود = يوم (YYYY-MM-DD)
+/// القيمة = HH:mm - HH:mm | Absent | "HH:mm - ?" | "? - HH:mm"
 class Export {
-  /// يبني Pivot: صف = موظف، عمود = يوم (YYYY-MM-DD)،
-  /// القيمة = HH:mm - HH:mm | Absent | "HH:mm - ?" | "? - HH:mm"
   static Future<List<int>> buildPivotExcelBytes({
     required List<QueryDocumentSnapshot<Map<String, dynamic>>> attendanceDocs,
     required DateTime from,
@@ -19,7 +14,7 @@ class Export {
   }) async {
     final fmtYmd = DateFormat('yyyy-MM-dd');
 
-    // 1) أيام المدى
+    // 1) days
     final days = <String>[];
     for (DateTime d = DateTime(from.year, from.month, from.day);
         !d.isAfter(to);
@@ -27,7 +22,7 @@ class Export {
       days.add(fmtYmd.format(d));
     }
 
-    // 2) تهيئة صف لكل مستخدم ظهر في السجلات
+    // 2) init pivot for seen users
     final pivot = <String, Map<String, String>>{}; // uid -> { day -> value }
     final userSet = <String>{};
     for (final d in attendanceDocs) {
@@ -38,7 +33,7 @@ class Export {
       pivot[uid] = { for (final day in days) day: 'Absent' };
     }
 
-    // 3) نجمع أول IN وآخر OUT لكل مستخدم/يوم
+    // 3) group first IN / last OUT per user/day
     final grouped = <String, Map<String, List<Timestamp>>>{}; // key=uid|day
     for (final doc in attendanceDocs) {
       final m = doc.data();
@@ -83,41 +78,44 @@ class Export {
       pivot[uid]![day] = cell;
     });
 
-    // 4) بناء ملف Excel
+    // 4) build Excel (excel: 2.1.0)
     final excel = Excel.createExcel();
     final sheet = excel['Attendance'];
     excel.setDefaultSheet('Attendance');
 
-    // ألوان
+    // Styles
+    final headerStyle = CellStyle(bold: true, horizontalAlign: HorizontalAlign.Center);
+    final center = CellStyle(horizontalAlign: HorizontalAlign.Center);
     final red = CellStyle(
-      backgroundColorHex: "#FF9999",
+      backgroundColorHex: "#FF9999", // Absent
       horizontalAlign: HorizontalAlign.Center,
     );
     final orange = CellStyle(
-      backgroundColorHex: "#FFD580",
+      backgroundColorHex: "#FFD580", // includes '?'
       horizontalAlign: HorizontalAlign.Center,
     );
-    final center = CellStyle(horizontalAlign: HorizontalAlign.Center);
-    final bold = CellStyle(bold: true, horizontalAlign: HorizontalAlign.Center);
 
-    // Header
+    // Header row (strings مباشرة — بدون TextCellValue)
     final header = ['Employee Name', ...days];
-    sheet.appendRow(header.map((e) => TextCellValue(e)).toList());
-    // نمط الهيدر
+    sheet.appendRow(header);
+
     for (int c = 0; c < header.length; c++) {
-      sheet.cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: 0)).cellStyle = bold;
+      sheet
+          .cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: 0))
+          .cellStyle = headerStyle;
     }
 
-    // Rows
-    int row = 1;
+    // Data rows
     final sortedUids = userSet.toList()
       ..sort((a, b) => (userNames[a] ?? a).compareTo(userNames[b] ?? b));
+
+    int row = 1;
     for (final uid in sortedUids) {
       final name = userNames[uid] ?? uid;
       final rowValues = [name, ...days.map((d) => pivot[uid]![d]!)];
-      sheet.appendRow(rowValues.map((e) => TextCellValue(e)).toList());
+      sheet.appendRow(rowValues);
 
-      // تلوين الخلايا
+      // style each cell
       for (int c = 1; c < rowValues.length; c++) {
         final v = rowValues[c];
         final cell = sheet.cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: row));
@@ -132,8 +130,8 @@ class Export {
       row++;
     }
 
-    // أعرض عرض أعمدة مناسب
-    sheet.setColWidth(0, 24); // اسم الموظف
+    // widths
+    sheet.setColWidth(0, 24); // employee name
     for (int c = 1; c < header.length; c++) {
       sheet.setColWidth(c, 12);
     }
