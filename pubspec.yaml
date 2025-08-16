@@ -10,6 +10,8 @@ dependencies:
   firebase_core: ^2.32.0
   firebase_auth: ^4.19.6
   cloud_firestore: ^4.15.0
+  uses-material-design: true
+
 
   # UI / State (لو عندك)
   provider: ^6.1.2
@@ -20,7 +22,3 @@ dependencies:
 
   # Export (جديد)
   excel: 2.1.0
-
-  flutter:
-  uses-material-design: true
-
