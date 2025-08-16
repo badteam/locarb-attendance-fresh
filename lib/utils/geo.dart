@@ -1,4 +1,8 @@
+// lib/utils/geo.dart
+
+import 'dart:async';                  // ← لازم يكون قبل أي كود
 import 'dart:math' as math;
+import 'dart:html' as html;          // للويب فقط (الـ CI بيبني Web)
 import 'package:flutter/foundation.dart' show kIsWeb;
 
 double _deg2rad(double deg) => deg * (math.pi / 180.0);
@@ -41,35 +45,27 @@ bool isInsideRadius({
 }
 
 /// إحداثيات المستخدم الحالية.
-/// على الويب نستخدم Geolocation من المتصفح.
-/// على المنصات الأخرى نرجّع (0.0, 0.0) مؤقتًا (تقدر لاحقًا تستبدلها بـ geolocator).
+/// على الويب: نستخدم Geolocation API من المتصفح.
+/// غير الويب: نرجّع (0,0) مؤقتًا (تقدر تضيف geolocator لاحقًا).
 Future<({double lat, double lng})> getCurrentPosition() async {
-  if (kIsWeb) {
-    try {
-      // ignore: avoid_web_libraries_in_flutter
-      final html = await _htmlLibrary();
-      final completer = Completer<({double lat, double lng})>();
-      html.window.navigator.geolocation.getCurrentPosition().then((pos) {
-        final coords = pos.coords;
-        final lat = (coords?.latitude ?? 0).toDouble();
-        final lng = (coords?.longitude ?? 0).toDouble();
-        completer.complete((lat: lat, lng: lng));
-      }).catchError((e) {
-        completer.complete((lat: 0.0, lng: 0.0));
-      });
-      return completer.future;
-    } catch (_) {
+  try {
+    if (!kIsWeb) {
       return (lat: 0.0, lng: 0.0);
     }
-  } else {
-    // لاحقًا: استخدم geolocator على الموبايل
+
+    final completer = Completer<({double lat, double lng})>();
+    // طلب الموقع من المتصفح
+    html.window.navigator.geolocation.getCurrentPosition().then((pos) {
+      final coords = pos.coords;
+      final lat = (coords?.latitude ?? 0).toDouble();
+      final lng = (coords?.longitude ?? 0).toDouble();
+      completer.complete((lat: lat, lng: lng));
+    }).catchError((_) {
+      completer.complete((lat: 0.0, lng: 0.0));
+    });
+
+    return completer.future;
+  } catch (_) {
     return (lat: 0.0, lng: 0.0);
   }
-}
-
-// Hack صغير عشان ما نستورد dart:html مباشرة هنا (نتفادى مشاكل تحليل غير ويب).
-import 'dart:async';
-Future<dynamic> _htmlLibrary() async {
-  // ignore: avoid_dynamic_calls
-  return (await Future.value()) ?? null;
 }
