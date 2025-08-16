@@ -10,7 +10,7 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # Firebase
+  # Firebase (متوافقة مع بعض)
   firebase_core: 2.32.0
   firebase_auth: 4.16.0
   cloud_firestore: 4.15.0
@@ -18,10 +18,10 @@ dependencies:
   # State / UI
   provider: 6.1.2
 
-  # Exporting
-  excel: 2.1.0         # ← مثبتة لتوافق الكود (تلون الأعمدة + setColWidth)
+  # Export
+  excel: 2.1.0         # ← مثبت (يدعم setColWidth و CellStyle.backgroundColorHex)
   csv: 5.1.1
-  share_plus: 10.0.0   # ← متوافق مع firebase_* اللي فوق
+  share_plus: 10.0.0   # ← متوافق مع إصدارات firebase أعلاه
 
   # Utils
   intl: 0.19.0
