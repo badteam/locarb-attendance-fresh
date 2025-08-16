@@ -1,25 +1,44 @@
-name: locarb_attendance_fresh
+name: locarb_attendance
+description: LoCarb Attendance (Dashboard + Reports + Branches/Shifts)
+publish_to: "none"
+version: 1.0.0+1
+
 environment:
   sdk: ">=3.2.0 <4.0.0"
 
 dependencies:
   flutter:
     sdk: flutter
-    uses-material-design: true
 
-
-  # Firebase (زي ما هي من نسختك المستقرة)
+  # Firebase (نسخ مستقرة ومتوافقة)
   firebase_core: ^2.32.0
   firebase_auth: ^4.19.6
   cloud_firestore: ^4.15.0
 
-
-  # UI / State (لو عندك)
+  # UI / State
   provider: ^6.1.2
 
   # Utilities
   intl: ^0.19.0
   http: ^1.2.2
 
-  # Export (جديد)
+  # Export to Excel (مستخدم في AttendanceReportScreen عبر utils/export.dart)
   excel: 2.1.0
+
+  # (اختياري) أيقونات iOS
+  cupertino_icons: ^1.0.8
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+  # لو هتضيف صور/خطوط مخصصة لاحقًا:
+  # assets:
+  #   - assets/images/
+  # fonts:
+  #   - family: MyFont
+  #     fonts:
+  #       - asset: assets/fonts/MyFont.ttf
