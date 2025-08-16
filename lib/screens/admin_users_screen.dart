@@ -134,7 +134,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                               ? null
                               : FirebaseFirestore.instance.doc('branches/$branchId').get(),
                           builder: (context, b) {
-                            final bname = (b.data()?.data()?['name'] ?? branchId).toString();
+                            final bname = (b.data?.data()?['name'] ?? branchId).toString();
                             return Text('Role: $role • Status: $status • Branch: ${branchId.isEmpty ? '—' : bname}\n$email');
                           },
                         ),
