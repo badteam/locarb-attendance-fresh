@@ -3,7 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:excel/excel.dart';
 import 'package:intl/intl.dart';
 
-/// يبني Pivot: صف = موظف، عمود = يوم (YYYY-MM-DD)
+/// يبني ملف Excel بنمط Pivot: صف = موظف، عمود = يوم (YYYY-MM-DD)
 /// القيمة = HH:mm - HH:mm | Absent | "HH:mm - ?" | "? - HH:mm"
 class Export {
   static Future<List<int>> buildPivotExcelBytes({
@@ -14,7 +14,7 @@ class Export {
   }) async {
     final fmtYmd = DateFormat('yyyy-MM-dd');
 
-    // 1) days
+    // 1) days of range
     final days = <String>[];
     for (DateTime d = DateTime(from.year, from.month, from.day);
         !d.isAfter(to);
@@ -46,11 +46,8 @@ class Export {
       final type = (m['type'] ?? '').toString();
       final at = m['at'];
       if (at is Timestamp) {
-        if (type == 'in') {
-          grouped[key]!['in']!.add(at);
-        } else if (type == 'out') {
-          grouped[key]!['out']!.add(at);
-        }
+        if (type == 'in') grouped[key]!['in']!.add(at);
+        if (type == 'out') grouped[key]!['out']!.add(at);
       }
     }
 
@@ -70,9 +67,9 @@ class Export {
       String cell = 'Absent';
       if (ins.isNotEmpty && outs.isNotEmpty) {
         cell = '${_fmtTime(ins.first)} - ${_fmtTime(outs.last)}';
-      } else if (ins.isNotEmpty && outs.isEmpty) {
+      } else if (ins.isNotEmpty) {
         cell = '${_fmtTime(ins.first)} - ?';
-      } else if (ins.isEmpty && outs.isNotEmpty) {
+      } else if (outs.isNotEmpty) {
         cell = '? - ${_fmtTime(outs.last)}';
       }
       pivot[uid]![day] = cell;
@@ -95,17 +92,14 @@ class Export {
       horizontalAlign: HorizontalAlign.Center,
     );
 
-    // Header row (strings مباشرة — بدون TextCellValue)
+    // Header row
     final header = ['Employee Name', ...days];
     sheet.appendRow(header);
-
     for (int c = 0; c < header.length; c++) {
-      sheet
-          .cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: 0))
-          .cellStyle = headerStyle;
+      sheet.cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: 0)).cellStyle = headerStyle;
     }
 
-    // Data rows
+    // Data rows (sorted by display name)
     final sortedUids = userSet.toList()
       ..sort((a, b) => (userNames[a] ?? a).compareTo(userNames[b] ?? b));
 
@@ -115,7 +109,6 @@ class Export {
       final rowValues = [name, ...days.map((d) => pivot[uid]![d]!)];
       sheet.appendRow(rowValues);
 
-      // style each cell
       for (int c = 1; c < rowValues.length; c++) {
         final v = rowValues[c];
         final cell = sheet.cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: row));
