@@ -1,3 +1,4 @@
+name: locarb_attendance_fresh
 environment:
   sdk: ">=3.2.0 <4.0.0"
 
