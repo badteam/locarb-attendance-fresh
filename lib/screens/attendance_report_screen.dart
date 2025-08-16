@@ -114,20 +114,20 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     }
   }
 
-  // ====== NEW: Export handler ======
+  // ====== Export handler ======
   Future<void> _exportExcel() async {
     try {
-      // 1) اسحب السجلات للمدى (نفس الاستعلام الأساسي)
+      // 1) fetch by date range
       Query<Map<String, dynamic>> q = FirebaseFirestore.instance
           .collection('attendance')
           .where('localDay', isGreaterThanOrEqualTo: _fmtDay(_from))
           .where('localDay', isLessThanOrEqualTo: _fmtDay(_to))
-          .orderBy('localDay', descending: false); // للترتيب
+          .orderBy('localDay', descending: false);
 
       final snap = await q.get();
       var docs = snap.docs;
 
-      // 2) فلترة الفرع/الشفت على الكلاينت (لتفادي index)
+      // 2) client-side filters (branch / shift)
       if (_branchId != null && _branchId!.isNotEmpty) {
         docs = docs
             .where((d) => (d.data()['branchId'] ?? '').toString() == _branchId)
@@ -144,7 +144,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
         return;
       }
 
-      // 3) جهّز أسماء المستخدمين (uid -> displayName)
+      // 3) user names
       final uidSet = <String>{};
       for (final d in docs) {
         final uid = (d.data()['userId'] ?? '').toString();
@@ -164,7 +164,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
         }
       }
 
-      // 4) ابنِ ملف Excel كـ Bytes
+      // 4) build Excel bytes
       final bytes = await Export.buildPivotExcelBytes(
         attendanceDocs: docs,
         from: _from,
@@ -174,7 +174,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
 
       final filename = 'attendance_${_fmtDay(_from)}_${_fmtDay(_to)}.xlsx';
 
-      // 5) تنزيل/حفظ
+      // 5) download (web)
       if (kIsWeb) {
         final blob = html.Blob([Uint8List.fromList(bytes)]);
         final url = html.Url.createObjectUrlFromBlob(blob);
@@ -186,7 +186,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
         html.document.body!.children.remove(anchor);
         html.Url.revokeObjectUrl(url);
       } else {
-        // على الموبايل/الديسكتوب: ممكن تضيف حفظ ومشاركة (يتطلب path_provider/share_plus)
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Excel generated (add mobile save/share if needed).')),
@@ -308,7 +307,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
           ),
           const Divider(height: 1),
 
-          // List content (نفس منطق العرض السابق)
+          // List content
           Expanded(
             child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
               stream: q.snapshots(),
@@ -394,7 +393,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   }
 }
 
-// ======== below: same widgets as قبل ========
+// ========= widgets المساعدة =========
 
 class _DaySection extends StatelessWidget {
   final String day;
