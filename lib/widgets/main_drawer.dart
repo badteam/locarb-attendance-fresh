@@ -1,5 +1,5 @@
-  import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
+import '../screens/branches_shifts_screen.dart';
 
 class MainDrawer extends StatelessWidget {
   const MainDrawer({super.key});
@@ -12,49 +12,32 @@ class MainDrawer extends StatelessWidget {
           padding: EdgeInsets.zero,
           children: [
             const DrawerHeader(
-              child: Text('LoCarb Menu', style: TextStyle(fontSize: 18)),
+              decoration: BoxDecoration(),
+              child: Text(
+                'LoCarb Admin',
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+              ),
             ),
+
             ListTile(
-              leading: const Icon(Icons.dashboard_outlined),
-              title: const Text('Dashboard'),
-              onTap: () => Navigator.pushReplacementNamed(context, '/'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.assessment_outlined),
-              title: const Text('Attendance Reports'),
-              onTap: () => Navigator.pushReplacementNamed(context, '/reports'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.group_outlined),
-              title: const Text('Users'),
-              onTap: () => Navigator.pushReplacementNamed(context, '/users'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.store_outlined),
+              leading: const Icon(Icons.storefront),
               title: const Text('Branches & Shifts'),
-              onTap: () => Navigator.pushReplacementNamed(context, '/branches'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.admin_panel_settings_outlined),
-              title: const Text('Admin Panel'),
-              onTap: () => Navigator.pushReplacementNamed(context, '/admin'),
-            ),
-            const Divider(),
-            ListTile(
-              leading: const Icon(Icons.person_outline),
-              title: const Text('Employee Home'),
-              onTap: () => Navigator.pushReplacementNamed(context, '/employee'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.logout),
-              title: const Text('Sign out'),
-              onTap: () async {
-                await FirebaseAuth.instance.signOut();
-                if (context.mounted) {
-                  Navigator.of(context).popUntil((r) => r.isFirst);
-                  Navigator.pushReplacementNamed(context, '/');
-                }
+              onTap: () {
+                Navigator.of(context).pop(); // اغلق الدروار
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const BranchesShiftsScreen(),
+                  ),
+                );
               },
+            ),
+
+            const Divider(height: 24),
+
+            ListTile(
+              leading: const Icon(Icons.close),
+              title: const Text('Close'),
+              onTap: () => Navigator.of(context).pop(),
             ),
           ],
         ),
