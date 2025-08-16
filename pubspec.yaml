@@ -5,12 +5,13 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+    uses-material-design: true
+
 
   # Firebase (زي ما هي من نسختك المستقرة)
   firebase_core: ^2.32.0
   firebase_auth: ^4.19.6
   cloud_firestore: ^4.15.0
-  uses-material-design: true
 
 
   # UI / State (لو عندك)
