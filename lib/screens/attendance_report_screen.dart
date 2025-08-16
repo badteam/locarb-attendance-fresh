@@ -1,18 +1,12 @@
 import 'dart:typed_data';
-import 'dart:html' as html show AnchorElement, Blob, Url; // للويب فقط
+import 'dart:html' as html show AnchorElement, Blob, Url; // Web
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import '../utils/export.dart';
 
-/// Attendance Reports (English)
-/// - Date range filter + optional branch & shift filter (client-side)
-/// - Grouped by day
-/// - Shows employee name, avatar, branch name, shift name and time
-/// - Export Excel (pivot): one row per employee, one column per day
 class AttendanceReportScreen extends StatefulWidget {
   const AttendanceReportScreen({super.key});
-
   @override
   State<AttendanceReportScreen> createState() => _AttendanceReportScreenState();
 }
@@ -114,10 +108,8 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     }
   }
 
-  // ====== Export handler ======
   Future<void> _exportExcel() async {
     try {
-      // 1) fetch by date range
       Query<Map<String, dynamic>> q = FirebaseFirestore.instance
           .collection('attendance')
           .where('localDay', isGreaterThanOrEqualTo: _fmtDay(_from))
@@ -127,16 +119,11 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
       final snap = await q.get();
       var docs = snap.docs;
 
-      // 2) client-side filters (branch / shift)
       if (_branchId != null && _branchId!.isNotEmpty) {
-        docs = docs
-            .where((d) => (d.data()['branchId'] ?? '').toString() == _branchId)
-            .toList();
+        docs = docs.where((d) => (d.data()['branchId'] ?? '').toString() == _branchId).toList();
       }
       if (_shiftId != null && _shiftId!.isNotEmpty) {
-        docs = docs
-            .where((d) => (d.data()['shiftId'] ?? '').toString() == _shiftId)
-            .toList();
+        docs = docs.where((d) => (d.data()['shiftId'] ?? '').toString() == _shiftId).toList();
       }
       if (docs.isEmpty) {
         if (!mounted) return;
@@ -144,7 +131,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
         return;
       }
 
-      // 3) user names
       final uidSet = <String>{};
       for (final d in docs) {
         final uid = (d.data()['userId'] ?? '').toString();
@@ -164,7 +150,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
         }
       }
 
-      // 4) build Excel bytes
       final bytes = await Export.buildPivotExcelBytes(
         attendanceDocs: docs,
         from: _from,
@@ -174,7 +159,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
 
       final filename = 'attendance_${_fmtDay(_from)}_${_fmtDay(_to)}.xlsx';
 
-      // 5) download (web)
       if (kIsWeb) {
         final blob = html.Blob([Uint8List.fromList(bytes)]);
         final url = html.Url.createObjectUrlFromBlob(blob);
@@ -205,10 +189,8 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
         .where('localDay', isLessThanOrEqualTo: _fmtDay(_to))
         .orderBy('localDay', descending: true);
 
-    final branchesRef =
-        FirebaseFirestore.instance.collection('branches').orderBy('name');
-    final shiftsRef =
-        FirebaseFirestore.instance.collection('shifts').orderBy('name');
+    final branchesRef = FirebaseFirestore.instance.collection('branches').orderBy('name');
+    final shiftsRef = FirebaseFirestore.instance.collection('shifts').orderBy('name');
 
     return Scaffold(
       appBar: AppBar(
@@ -224,7 +206,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Filters
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
             child: Wrap(
@@ -232,17 +213,8 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
               spacing: 8,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                _FilterButton(
-                  icon: Icons.date_range,
-                  label: 'From: ${_fmtDay(_from)}',
-                  onTap: _pickFrom,
-                ),
-                _FilterButton(
-                  icon: Icons.event,
-                  label: 'To: ${_fmtDay(_to)}',
-                  onTap: _pickTo,
-                ),
-                // Branch
+                _FilterButton(icon: Icons.date_range, label: 'From: ${_fmtDay(_from)}', onTap: _pickFrom),
+                _FilterButton(icon: Icons.event, label: 'To: ${_fmtDay(_to)}', onTap: _pickTo),
                 StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                   stream: branchesRef.snapshots(),
                   builder: (context, snap) {
@@ -256,23 +228,17 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                       }
                     }
                     return InputDecorator(
-                      decoration: const InputDecoration(
-                        labelText: 'Branch',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
+                      decoration: const InputDecoration(labelText: 'Branch', border: OutlineInputBorder(), isDense: true),
                       child: DropdownButtonHideUnderline(
                         child: DropdownButton<String>(
                           value: _branchId ?? '',
                           items: items,
-                          onChanged: (v) =>
-                              setState(() => _branchId = (v ?? '').isEmpty ? null : v),
+                          onChanged: (v) => setState(() => _branchId = (v ?? '').isEmpty ? null : v),
                         ),
                       ),
                     );
                   },
                 ),
-                // Shift
                 StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                   stream: shiftsRef.snapshots(),
                   builder: (context, snap) {
@@ -286,17 +252,12 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                       }
                     }
                     return InputDecorator(
-                      decoration: const InputDecoration(
-                        labelText: 'Shift',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
+                      decoration: const InputDecoration(labelText: 'Shift', border: OutlineInputBorder(), isDense: true),
                       child: DropdownButtonHideUnderline(
                         child: DropdownButton<String>(
                           value: _shiftId ?? '',
                           items: items,
-                          onChanged: (v) =>
-                              setState(() => _shiftId = (v ?? '').isEmpty ? null : v),
+                          onChanged: (v) => setState(() => _shiftId = (v ?? '').isEmpty ? null : v),
                         ),
                       ),
                     );
@@ -306,45 +267,30 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
             ),
           ),
           const Divider(height: 1),
-
-          // List content
           Expanded(
             child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
               stream: q.snapshots(),
               builder: (context, snap) {
-                if (snap.hasError) {
-                  return _ErrorBox(error: snap.error.toString());
-                }
-                if (snap.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
-                }
+                if (snap.hasError) return _ErrorBox(error: snap.error.toString());
+                if (snap.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
 
                 var docs = snap.data?.docs ?? [];
 
                 if (_branchId != null && _branchId!.isNotEmpty) {
-                  docs = docs
-                      .where((d) =>
-                          (d.data()['branchId'] ?? '').toString() == _branchId)
-                      .toList();
+                  docs = docs.where((d) => (d.data()['branchId'] ?? '').toString() == _branchId).toList();
                 }
                 if (_shiftId != null && _shiftId!.isNotEmpty) {
-                  docs = docs
-                      .where((d) =>
-                          (d.data()['shiftId'] ?? '').toString() == _shiftId)
-                      .toList();
+                  docs = docs.where((d) => (d.data()['shiftId'] ?? '').toString() == _shiftId).toList();
                 }
 
-                if (docs.isEmpty) {
-                  return const Center(child: Text('No records in the selected range'));
-                }
+                if (docs.isEmpty) return const Center(child: Text('No records in the selected range'));
 
                 final uniqueUsers = <String>{};
                 for (final d in docs) {
                   uniqueUsers.add((d.data()['userId'] ?? '').toString());
                 }
 
-                final Map<String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>
-                    byDay = {};
+                final Map<String, List<QueryDocumentSnapshot<Map<String, dynamic>>>> byDay = {};
                 for (final d in docs) {
                   final day = (d.data()['localDay'] ?? '').toString();
                   byDay.putIfAbsent(day, () => []).add(d);
@@ -393,8 +339,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   }
 }
 
-// ========= widgets المساعدة =========
-
 class _DaySection extends StatelessWidget {
   final String day;
   final List<QueryDocumentSnapshot<Map<String, dynamic>>> items;
@@ -439,10 +383,7 @@ class _DaySection extends StatelessWidget {
               final assignedBranchId = (userSnap.data?.$3 ?? '');
 
               return FutureBuilder<List<String>>(
-                future: Future.wait([
-                  branchNameOf(branchId),
-                  shiftNameOf(shiftId),
-                ]),
+                future: Future.wait([branchNameOf(branchId), shiftNameOf(shiftId)]),
                 builder: (context, infoSnap) {
                   final branchName = (infoSnap.data?.elementAtOrNull(0) ?? branchId);
                   final shiftName = (infoSnap.data?.elementAtOrNull(1) ?? 'Unassigned');
@@ -474,19 +415,12 @@ class _DaySection extends StatelessWidget {
                         children: [
                           const SizedBox(height: 2),
                           Text('Branch: $branchName • Shift: $shiftName • Time: ${fmtTime(at)}'),
-                          Text(
-                            '($lat, $lng)',
-                            style: const TextStyle(fontSize: 12, color: Colors.black54),
-                          ),
+                          Text('($lat, $lng)', style: const TextStyle(fontSize: 12, color: Colors.black54)),
                         ],
                       ),
                       trailing: Chip(
-                        label: Text(
-                          typ == 'in' ? 'Check-in' : 'Check-out',
-                          style: const TextStyle(color: Colors.white),
-                        ),
-                        backgroundColor:
-                            typ == 'in' ? Colors.green.shade600 : Colors.red.shade600,
+                        label: Text(typ == 'in' ? 'Check-in' : 'Check-out', style: const TextStyle(color: Colors.white)),
+                        backgroundColor: typ == 'in' ? Colors.green.shade600 : Colors.red.shade600,
                       ),
                     ),
                   );
@@ -509,14 +443,9 @@ class _Avatar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bg = typ == 'in' ? Colors.green.shade600 : Colors.red.shade600;
-    if (avatarUrl.isNotEmpty) {
-      return CircleAvatar(backgroundImage: NetworkImage(avatarUrl));
-    }
+    if (avatarUrl.isNotEmpty) return CircleAvatar(backgroundImage: NetworkImage(avatarUrl));
     final ch = name.isNotEmpty ? name.trim()[0].toUpperCase() : '?';
-    return CircleAvatar(
-      backgroundColor: bg,
-      child: Text(ch, style: const TextStyle(color: Colors.white)),
-    );
+    return CircleAvatar(backgroundColor: bg, child: Text(ch, style: const TextStyle(color: Colors.white)));
   }
 }
 
@@ -524,18 +453,14 @@ class _FilterButton extends StatelessWidget {
   final IconData icon;
   final String label;
   final VoidCallback onTap;
-
   const _FilterButton({required this.icon, required this.label, required this.onTap});
-
   @override
   Widget build(BuildContext context) {
     return OutlinedButton.icon(
       onPressed: onTap,
       icon: Icon(icon),
       label: Text(label),
-      style: OutlinedButton.styleFrom(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-      ),
+      style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12)),
     );
   }
 }
@@ -543,7 +468,6 @@ class _FilterButton extends StatelessWidget {
 class _ErrorBox extends StatelessWidget {
   final String error;
   const _ErrorBox({required this.error});
-
   @override
   Widget build(BuildContext context) {
     return Padding(
@@ -553,9 +477,7 @@ class _ErrorBox extends StatelessWidget {
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Text(
-            'Query error:\n$error\n\n'
-            'If it mentions an index, you can either select "All branches" '
-            'or create the composite index in Firebase Console > Firestore > Indexes.',
+            'Query error:\n$error\n\nIf it mentions an index, select "All branches" or create the index in Firestore > Indexes.',
           ),
         ),
       ),
