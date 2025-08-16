@@ -6,7 +6,7 @@ class UsersScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Scaffold(
+    return Scaffold(
       appBar: AppBar(title: Text('Users')),
       drawer: MainDrawer(),
       body: Center(child: Text('Users management — coming soon')),
