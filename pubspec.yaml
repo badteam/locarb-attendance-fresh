@@ -1,5 +1,5 @@
-name: your_project_name
-description: A new Flutter project for HR attendance with admin panel
+name: locarb_attendance
+description: LoCarb Attendance (stable baseline)
 publish_to: "none"
 version: 1.0.0+1
 
@@ -10,27 +10,22 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # Firebase (متوافقة مع بعض)
-  firebase_core: ^2.28.0
-  firebase_auth: 4.16.0
-  cloud_firestore: 4.15.0
+  # Firebase (نسخ مستقرة ومتوافقة)
+  firebase_core: ^2.32.0
+  firebase_auth: ^4.19.6
+  cloud_firestore: ^4.15.0
 
-  # State / UI
-  provider: 6.1.2
+  # UI / State (لو بتستخدمه)
+  provider: ^6.1.2
 
-  # Export
-  excel: 2.1.0         # ← مثبت (يدعم setColWidth و CellStyle.backgroundColorHex)
-  csv: 5.1.1
-  share_plus: 10.0.0   # ← متوافق مع إصدارات firebase أعلاه
-
-  # Utils
-  intl: 0.19.0
-  http: 1.2.2
+  # Utilities
+  intl: ^0.19.0
+  http: ^1.2.2
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: 3.0.0
+  flutter_lints: ^3.0.0
 
 flutter:
   uses-material-design: true
