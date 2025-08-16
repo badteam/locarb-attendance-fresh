@@ -20,7 +20,7 @@ dependencies:
 
   # Exporting packages
   csv: ^5.1.1
-  excel: ^4.0.2
+  excel: ^4.0.6
   share_plus: ^10.0.0
 
   # Utils
