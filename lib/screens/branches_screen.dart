@@ -1,154 +1,467 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import '../widgets/main_drawer.dart';
 
-class BranchesScreen extends StatelessWidget {
+class BranchesScreen extends StatefulWidget {
   const BranchesScreen({super.key});
 
   @override
+  State<BranchesScreen> createState() => _BranchesScreenState();
+}
+
+class _BranchesScreenState extends State<BranchesScreen> with SingleTickerProviderStateMixin {
+  late final TabController _tab;
+
+  @override
+  void initState() {
+    super.initState();
+    _tab = TabController(length: 2, vsync: this);
+  }
+
+  @override
+  void dispose() {
+    _tab.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final col = FirebaseFirestore.instance.collection('branches').orderBy('name');
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Branches & Shifts'),
+        bottom: TabBar(
+          controller: _tab,
+          tabs: const [
+            Tab(icon: Icon(Icons.store_outlined), text: 'Branches'),
+            Tab(icon: Icon(Icons.access_time), text: 'Shifts'),
+          ],
+        ),
+      ),
+      drawer: const MainDrawer(),
+      body: TabBarView(
+        controller: _tab,
+        children: const [
+          _BranchesTab(),
+          _ShiftsTab(),
+        ],
+      ),
+    );
+  }
+}
+
+/* -------------------- Branches Tab -------------------- */
+
+class _BranchesTab extends StatelessWidget {
+  const _BranchesTab();
+
+  @override
+  Widget build(BuildContext context) {
+    final q = FirebaseFirestore.instance.collection('branches').orderBy('name');
 
     return Scaffold(
       body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: col.snapshots(),
+        stream: q.snapshots(),
         builder: (context, snap) {
+          if (snap.hasError) {
+            return _ErrorBox(error: snap.error.toString());
+          }
           if (snap.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
           }
-          final docs = snap.data?.docs ?? [];
-          return ListView.separated(
-            padding: const EdgeInsets.all(12),
-            itemCount: docs.length + 1,
-            separatorBuilder: (_, __) => const Divider(height: 1),
-            itemBuilder: (context, i) {
-              if (i == 0) {
-                // زر إضافة فرع
-                return Align(
-                  alignment: Alignment.centerLeft,
-                  child: Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: FilledButton.icon(
-                      icon: const Icon(Icons.add),
-                      label: const Text('إضافة فرع'),
-                      onPressed: () => _openBranchDialog(context),
-                    ),
-                  ),
-                );
-              }
-              final d = docs[i - 1];
-              final data = d.data();
-              final name = (data['name'] ?? d.id).toString();
-              final code = (data['code'] ?? '').toString();
-              final geo = (data['geo'] ?? {}) as Map<String, dynamic>;
-              final lat = (geo['lat'] ?? 0).toString();
-              final lng = (geo['lng'] ?? 0).toString();
-              final rad = (geo['radiusMeters'] ?? 0).toString();
 
-              return ListTile(
-                leading: const Icon(Icons.store_mall_directory),
-                title: Text('$name ($code)'),
-                subtitle: Text('الموقع: $lat, $lng • نصف القطر: $rad م'),
-                trailing: Wrap(
-                  spacing: 6,
-                  children: [
-                    OutlinedButton(
-                      onPressed: () => _openBranchDialog(context, id: d.id, existing: data),
-                      child: const Text('تعديل'),
-                    ),
-                    OutlinedButton(
-                      onPressed: () async {
-                        final ok = await _confirm(context, 'حذف الفرع "$name"؟');
-                        if (ok) await d.reference.delete();
-                      },
-                      child: const Text('حذف'),
-                    ),
-                  ],
+          final docs = snap.data?.docs ?? [];
+          if (docs.isEmpty) {
+            return const Center(child: Text('No branches yet'));
+          }
+
+          return ListView.separated(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
+            itemCount: docs.length,
+            separatorBuilder: (_, __) => const SizedBox(height: 8),
+            itemBuilder: (context, i) {
+              final d = docs[i];
+              final m = d.data();
+              final name = (m['name'] ?? d.id).toString();
+              final address = (m['address'] ?? '').toString();
+              final allowAll = (m['allowAllBranches'] ?? false) == true;
+
+              return Card(
+                elevation: 1.2,
+                child: ListTile(
+                  leading: const Icon(Icons.store_mall_directory),
+                  title: Text(name),
+                  subtitle: Text(address.isEmpty ? 'No address' : address),
+                  trailing: allowAll
+                      ? const Chip(label: Text('Open for all'), visualDensity: VisualDensity.compact)
+                      : null,
+                  onTap: () => _editBranchDialog(context, d.id, m),
                 ),
               );
             },
           );
         },
       ),
+      floatingActionButton: FloatingActionButton.extended(
+        icon: const Icon(Icons.add),
+        label: const Text('Add branch'),
+        onPressed: () => _addBranchDialog(context),
+      ),
     );
   }
 
-  Future<void> _openBranchDialog(BuildContext context, {String? id, Map<String, dynamic>? existing}) async {
-    final name = TextEditingController(text: (existing?['name'] ?? '').toString());
-    final code = TextEditingController(text: (existing?['code'] ?? '').toString());
-    final address = TextEditingController(text: (existing?['address'] ?? '').toString());
-    final lat = TextEditingController(text: ((existing?['geo']?['lat']) ?? '').toString());
-    final lng = TextEditingController(text: ((existing?['geo']?['lng']) ?? '').toString());
-    final radius = TextEditingController(text: ((existing?['geo']?['radiusMeters']) ?? '150').toString());
+  Future<void> _addBranchDialog(BuildContext context) async {
+    final name = TextEditingController();
+    final address = TextEditingController();
+    bool allowAll = false;
 
     await showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        title: Text(id == null ? 'إضافة فرع' : 'تعديل فرع'),
-        content: SingleChildScrollView(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 420),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(controller: name, decoration: const InputDecoration(labelText: 'اسم الفرع')),
-                TextField(controller: code, decoration: const InputDecoration(labelText: 'كود الفرع')),
-                TextField(controller: address, decoration: const InputDecoration(labelText: 'العنوان')),
-                const SizedBox(height: 8),
-                Row(children: [
-                  Expanded(child: TextField(controller: lat, decoration: const InputDecoration(labelText: 'Latitude'), keyboardType: TextInputType.number)),
-                  const SizedBox(width: 8),
-                  Expanded(child: TextField(controller: lng, decoration: const InputDecoration(labelText: 'Longitude'), keyboardType: TextInputType.number)),
-                ]),
-                const SizedBox(height: 8),
-                TextField(controller: radius, decoration: const InputDecoration(labelText: 'نصف القطر بالمتر'), keyboardType: TextInputType.number),
-              ],
+        title: const Text('New branch'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(controller: name, decoration: const InputDecoration(labelText: 'Name')),
+            const SizedBox(height: 8),
+            TextField(controller: address, decoration: const InputDecoration(labelText: 'Address')),
+            const SizedBox(height: 8),
+            CheckboxListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Allow check-in from any branch'),
+              value: allowAll,
+              onChanged: (v) => allowAll = v ?? false,
             ),
-          ),
+          ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('إلغاء')),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
           FilledButton(
             onPressed: () async {
-              final data = {
+              if (name.text.trim().isEmpty) return;
+              await FirebaseFirestore.instance.collection('branches').add({
                 'name': name.text.trim(),
-                'code': code.text.trim(),
                 'address': address.text.trim(),
-                'geo': {
-                  'lat': double.tryParse(lat.text) ?? 0,
-                  'lng': double.tryParse(lng.text) ?? 0,
-                  'radiusMeters': double.tryParse(radius.text) ?? 150,
-                },
-                'updatedAt': FieldValue.serverTimestamp(),
-              };
-              final col = FirebaseFirestore.instance.collection('branches');
-              if (id == null) {
-                await col.add({
-                  ...data,
-                  'createdAt': FieldValue.serverTimestamp(),
-                });
-              } else {
-                await col.doc(id).set(data, SetOptions(merge: true));
-              }
-              if (context.mounted) Navigator.pop(context);
+                'allowAllBranches': allowAll,
+                'createdAt': FieldValue.serverTimestamp(),
+              });
+              // ignore: use_build_context_synchronously
+              Navigator.pop(context);
             },
-            child: Text(id == null ? 'حفظ' : 'تحديث'),
+            child: const Text('Save'),
           ),
         ],
       ),
     );
   }
 
-  Future<bool> _confirm(BuildContext context, String msg) async {
-    final r = await showDialog<bool>(
+  Future<void> _editBranchDialog(BuildContext context, String id, Map<String, dynamic> data) async {
+    final name = TextEditingController(text: (data['name'] ?? '').toString());
+    final address = TextEditingController(text: (data['address'] ?? '').toString());
+    bool allowAll = (data['allowAllBranches'] ?? false) == true;
+
+    await showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        content: Text(msg),
+        title: const Text('Edit branch'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(controller: name, decoration: const InputDecoration(labelText: 'Name')),
+            const SizedBox(height: 8),
+            TextField(controller: address, decoration: const InputDecoration(labelText: 'Address')),
+            const SizedBox(height: 8),
+            StatefulBuilder(
+              builder: (context, setState) => CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Allow check-in from any branch'),
+                value: allowAll,
+                onChanged: (v) => setState(() => allowAll = v ?? false),
+              ),
+            ),
+          ],
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('إلغاء')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('تأكيد')),
+          TextButton(
+            onPressed: () async {
+              await FirebaseFirestore.instance.collection('branches').doc(id).delete();
+              // ignore: use_build_context_synchronously
+              Navigator.pop(context);
+            },
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+          FilledButton(
+            onPressed: () async {
+              if (name.text.trim().isEmpty) return;
+              await FirebaseFirestore.instance.collection('branches').doc(id).set({
+                'name': name.text.trim(),
+                'address': address.text.trim(),
+                'allowAllBranches': allowAll,
+                'updatedAt': FieldValue.serverTimestamp(),
+              }, SetOptions(merge: true));
+              // ignore: use_build_context_synchronously
+              Navigator.pop(context);
+            },
+            child: const Text('Save'),
+          ),
         ],
       ),
     );
-    return r == true;
+  }
+}
+
+/* -------------------- Shifts Tab -------------------- */
+
+class _ShiftsTab extends StatelessWidget {
+  const _ShiftsTab();
+
+  @override
+  Widget build(BuildContext context) {
+    final q = FirebaseFirestore.instance.collection('shifts').orderBy('name');
+
+    return Scaffold(
+      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        stream: q.snapshots(),
+        builder: (context, snap) {
+          if (snap.hasError) return _ErrorBox(error: snap.error.toString());
+          if (snap.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          final docs = snap.data?.docs ?? [];
+          if (docs.isEmpty) return const Center(child: Text('No shifts yet'));
+
+          return ListView.separated(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
+            itemCount: docs.length,
+            separatorBuilder: (_, __) => const SizedBox(height: 8),
+            itemBuilder: (context, i) {
+              final d = docs[i];
+              final m = d.data();
+              final name = (m['name'] ?? d.id).toString();
+              final start = (m['start'] ?? '').toString(); // HH:mm
+              final end = (m['end'] ?? '').toString();     // HH:mm
+              final grace = (m['graceMinutes'] ?? 0).toString();
+              final branchId = (m['branchId'] ?? '').toString();
+
+              return Card(
+                elevation: 1.2,
+                child: ListTile(
+                  leading: const Icon(Icons.access_time),
+                  title: Text(name),
+                  subtitle: Text('Time: $start - $end • Grace: $grace min\nBranch: ${branchId.isEmpty ? "Any" : branchId}'),
+                  isThreeLine: true,
+                  onTap: () => _editShiftDialog(context, d.id, m),
+                ),
+              );
+            },
+          );
+        },
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        icon: const Icon(Icons.add),
+        label: const Text('Add shift'),
+        onPressed: () => _addShiftDialog(context),
+      ),
+    );
+  }
+
+  Future<void> _addShiftDialog(BuildContext context) async {
+    final name = TextEditingController();
+    final start = TextEditingController(); // بصيغة HH:mm
+    final end = TextEditingController();
+    final grace = TextEditingController(text: '10'); // دقائق سماح
+    final branchId = TextEditingController(); // اختياري: ربط الشفت بفرع
+
+    TimeOfDay? _pickTime(TimeOfDay? init) => init;
+
+    Future<void> pickStart() async {
+      final t = await showTimePicker(context: context, initialTime: TimeOfDay.now());
+      if (t != null) start.text = '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+    }
+
+    Future<void> pickEnd() async {
+      final t = await showTimePicker(context: context, initialTime: TimeOfDay.now());
+      if (t != null) end.text = '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+    }
+
+    await showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('New shift'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(controller: name, decoration: const InputDecoration(labelText: 'Name')),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(child: TextField(controller: start, decoration: const InputDecoration(labelText: 'Start (HH:mm)'))),
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(onPressed: pickStart, icon: const Icon(Icons.access_time), label: const Text('Pick')),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(child: TextField(controller: end, decoration: const InputDecoration(labelText: 'End (HH:mm)'))),
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(onPressed: pickEnd, icon: const Icon(Icons.access_time), label: const Text('Pick')),
+                ],
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: grace,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'Grace minutes'),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: branchId,
+                decoration: const InputDecoration(
+                  labelText: 'Branch ID (optional)',
+                  helperText: 'Leave empty to allow this shift in any branch',
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () async {
+              if (name.text.trim().isEmpty || start.text.trim().isEmpty || end.text.trim().isEmpty) return;
+              final gm = int.tryParse(grace.text.trim()) ?? 0;
+              await FirebaseFirestore.instance.collection('shifts').add({
+                'name': name.text.trim(),
+                'start': start.text.trim(),
+                'end': end.text.trim(),
+                'graceMinutes': gm,
+                'branchId': branchId.text.trim(), // ممكن يكون فاضي
+                'createdAt': FieldValue.serverTimestamp(),
+              });
+              // ignore: use_build_context_synchronously
+              Navigator.pop(context);
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _editShiftDialog(BuildContext context, String id, Map<String, dynamic> data) async {
+    final name = TextEditingController(text: (data['name'] ?? '').toString());
+    final start = TextEditingController(text: (data['start'] ?? '').toString());
+    final end = TextEditingController(text: (data['end'] ?? '').toString());
+    final grace = TextEditingController(text: (data['graceMinutes'] ?? 0).toString());
+    final branchId = TextEditingController(text: (data['branchId'] ?? '').toString());
+
+    Future<void> pickStart() async {
+      final t = await showTimePicker(context: context, initialTime: TimeOfDay.now());
+      if (t != null) start.text = '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+    }
+
+    Future<void> pickEnd() async {
+      final t = await showTimePicker(context: context, initialTime: TimeOfDay.now());
+      if (t != null) end.text = '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+    }
+
+    await showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Edit shift'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(controller: name, decoration: const InputDecoration(labelText: 'Name')),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(child: TextField(controller: start, decoration: const InputDecoration(labelText: 'Start (HH:mm)'))),
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(onPressed: pickStart, icon: const Icon(Icons.access_time), label: const Text('Pick')),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(child: TextField(controller: end, decoration: const InputDecoration(labelText: 'End (HH:mm)'))),
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(onPressed: pickEnd, icon: const Icon(Icons.access_time), label: const Text('Pick')),
+                ],
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: grace,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'Grace minutes'),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: branchId,
+                decoration: const InputDecoration(
+                  labelText: 'Branch ID (optional)',
+                  helperText: 'Leave empty to allow this shift in any branch',
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await FirebaseFirestore.instance.collection('shifts').doc(id).delete();
+              // ignore: use_build_context_synchronously
+              Navigator.pop(context);
+            },
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+          FilledButton(
+            onPressed: () async {
+              if (name.text.trim().isEmpty || start.text.trim().isEmpty || end.text.trim().isEmpty) return;
+              final gm = int.tryParse(grace.text.trim()) ?? 0;
+              await FirebaseFirestore.instance.collection('shifts').doc(id).set({
+                'name': name.text.trim(),
+                'start': start.text.trim(),
+                'end': end.text.trim(),
+                'graceMinutes': gm,
+                'branchId': branchId.text.trim(),
+                'updatedAt': FieldValue.serverTimestamp(),
+              }, SetOptions(merge: true));
+              // ignore: use_build_context_synchronously
+              Navigator.pop(context);
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/* -------------------- Helpers -------------------- */
+
+class _ErrorBox extends StatelessWidget {
+  final String error;
+  const _ErrorBox({required this.error});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Card(
+        color: Theme.of(context).colorScheme.errorContainer,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Text(
+            'Query error:\n$error',
+          ),
+        ),
+      ),
+    );
   }
 }
