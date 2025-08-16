@@ -1,11 +1,15 @@
+import 'dart:typed_data';
+import 'dart:html' as html show AnchorElement, Blob, Url; // للويب فقط
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import '../utils/export.dart';
 
 /// Attendance Reports (English)
-/// - Date range filter + optional branch & shift filter (branch/shift filtered on client)
+/// - Date range filter + optional branch & shift filter (client-side)
 /// - Grouped by day
 /// - Shows employee name, avatar, branch name, shift name and time
-/// - Highlights entries made from a branch different than user's assigned branch (at that time)
+/// - Export Excel (pivot): one row per employee, one column per day
 class AttendanceReportScreen extends StatefulWidget {
   const AttendanceReportScreen({super.key});
 
@@ -19,14 +23,12 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   String? _branchId;
   String? _shiftId;
 
-  // Simple caches to avoid repeated reads
   final Map<String, String> _userNameCache = {};
   final Map<String, String> _userAvatarCache = {};
   final Map<String, String> _userAssignedBranchCache = {};
   final Map<String, String> _branchNameCache = {};
   final Map<String, String> _shiftNameCache = {};
 
-  // Date pickers
   Future<void> _pickFrom() async {
     final d = await showDatePicker(
       context: context,
@@ -47,7 +49,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     if (d != null) setState(() => _to = DateTime(d.year, d.month, d.day));
   }
 
-  // YYYY-MM-DD (stable for ordering and comparisons)
   String _fmtDay(DateTime d) =>
       '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 
@@ -59,23 +60,18 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     return '$hh:$mm';
   }
 
-  // Fetch user display info (name + avatarUrl + assignedBranch at the moment)
   Future<(String name, String avatarUrl, String assignedBranchId)> _userInfo(String uid) async {
-    String name, avatar, assignedBranch;
     if (_userNameCache.containsKey(uid)) {
-      name = _userNameCache[uid]!;
-      avatar = _userAvatarCache[uid] ?? '';
-      assignedBranch = _userAssignedBranchCache[uid] ?? '';
-      return (name, avatar, assignedBranch);
+      return (_userNameCache[uid]!, _userAvatarCache[uid] ?? '', _userAssignedBranchCache[uid] ?? '');
     }
     try {
       final s = await FirebaseFirestore.instance.doc('users/$uid').get();
       final m = s.data() ?? {};
       final full = (m['fullName'] ?? '').toString();
       final uname = (m['username'] ?? '').toString();
-      name = full.isNotEmpty ? full : (uname.isNotEmpty ? uname : uid);
-      avatar = (m['avatarUrl'] ?? '').toString();
-      assignedBranch = (m['branchId'] ?? '').toString();
+      final name = full.isNotEmpty ? full : (uname.isNotEmpty ? uname : uid);
+      final avatar = (m['avatarUrl'] ?? '').toString();
+      final assignedBranch = (m['branchId'] ?? '').toString();
       _userNameCache[uid] = name;
       _userAvatarCache[uid] = avatar;
       _userAssignedBranchCache[uid] = assignedBranch;
@@ -88,7 +84,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     }
   }
 
-  // Fetch branch name
   Future<String> _branchName(String id) async {
     if (id.isEmpty) return 'Unassigned';
     if (_branchNameCache.containsKey(id)) return _branchNameCache[id]!;
@@ -104,7 +99,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     }
   }
 
-  // Fetch shift name
   Future<String> _shiftName(String id) async {
     if (id.isEmpty) return 'Unassigned';
     if (_shiftNameCache.containsKey(id)) return _shiftNameCache[id]!;
@@ -120,9 +114,92 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     }
   }
 
+  // ====== NEW: Export handler ======
+  Future<void> _exportExcel() async {
+    try {
+      // 1) اسحب السجلات للمدى (نفس الاستعلام الأساسي)
+      Query<Map<String, dynamic>> q = FirebaseFirestore.instance
+          .collection('attendance')
+          .where('localDay', isGreaterThanOrEqualTo: _fmtDay(_from))
+          .where('localDay', isLessThanOrEqualTo: _fmtDay(_to))
+          .orderBy('localDay', descending: false); // للترتيب
+
+      final snap = await q.get();
+      var docs = snap.docs;
+
+      // 2) فلترة الفرع/الشفت على الكلاينت (لتفادي index)
+      if (_branchId != null && _branchId!.isNotEmpty) {
+        docs = docs
+            .where((d) => (d.data()['branchId'] ?? '').toString() == _branchId)
+            .toList();
+      }
+      if (_shiftId != null && _shiftId!.isNotEmpty) {
+        docs = docs
+            .where((d) => (d.data()['shiftId'] ?? '').toString() == _shiftId)
+            .toList();
+      }
+      if (docs.isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No records to export for this range')));
+        return;
+      }
+
+      // 3) جهّز أسماء المستخدمين (uid -> displayName)
+      final uidSet = <String>{};
+      for (final d in docs) {
+        final uid = (d.data()['userId'] ?? '').toString();
+        if (uid.isNotEmpty) uidSet.add(uid);
+      }
+
+      final userNames = <String, String>{};
+      for (final uid in uidSet) {
+        try {
+          final u = await FirebaseFirestore.instance.doc('users/$uid').get();
+          final m = u.data() ?? {};
+          final full = (m['fullName'] ?? '').toString();
+          final uname = (m['username'] ?? '').toString();
+          userNames[uid] = full.isNotEmpty ? full : (uname.isNotEmpty ? uname : uid);
+        } catch (_) {
+          userNames[uid] = uid;
+        }
+      }
+
+      // 4) ابنِ ملف Excel كـ Bytes
+      final bytes = await Export.buildPivotExcelBytes(
+        attendanceDocs: docs,
+        from: _from,
+        to: _to,
+        userNames: userNames,
+      );
+
+      final filename = 'attendance_${_fmtDay(_from)}_${_fmtDay(_to)}.xlsx';
+
+      // 5) تنزيل/حفظ
+      if (kIsWeb) {
+        final blob = html.Blob([Uint8List.fromList(bytes)]);
+        final url = html.Url.createObjectUrlFromBlob(blob);
+        final anchor = html.AnchorElement(href: url)
+          ..download = filename
+          ..style.display = 'none';
+        html.document.body!.children.add(anchor);
+        anchor.click();
+        html.document.body!.children.remove(anchor);
+        html.Url.revokeObjectUrl(url);
+      } else {
+        // على الموبايل/الديسكتوب: ممكن تضيف حفظ ومشاركة (يتطلب path_provider/share_plus)
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Excel generated (add mobile save/share if needed).')),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Export failed: $e')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    // Query by date range only; order by the same field to avoid composite index
     Query<Map<String, dynamic>> q = FirebaseFirestore.instance
         .collection('attendance')
         .where('localDay', isGreaterThanOrEqualTo: _fmtDay(_from))
@@ -135,10 +212,20 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
         FirebaseFirestore.instance.collection('shifts').orderBy('name');
 
     return Scaffold(
+      appBar: AppBar(
+        title: const Text('Attendance Reports'),
+        actions: [
+          IconButton(
+            tooltip: 'Export Excel',
+            onPressed: _exportExcel,
+            icon: const Icon(Icons.file_download),
+          ),
+        ],
+      ),
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Filters bar
+          // Filters
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
             child: Wrap(
@@ -156,7 +243,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                   label: 'To: ${_fmtDay(_to)}',
                   onTap: _pickTo,
                 ),
-                // Branch dropdown
+                // Branch
                 StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                   stream: branchesRef.snapshots(),
                   builder: (context, snap) {
@@ -186,7 +273,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                     );
                   },
                 ),
-                // Shift dropdown
+                // Shift
                 StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                   stream: shiftsRef.snapshots(),
                   builder: (context, snap) {
@@ -221,7 +308,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
           ),
           const Divider(height: 1),
 
-          // List
+          // List content (نفس منطق العرض السابق)
           Expanded(
             child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
               stream: q.snapshots(),
@@ -235,7 +322,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
 
                 var docs = snap.data?.docs ?? [];
 
-                // Client-side filters (to avoid composite index for now)
                 if (_branchId != null && _branchId!.isNotEmpty) {
                   docs = docs
                       .where((d) =>
@@ -253,13 +339,11 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                   return const Center(child: Text('No records in the selected range'));
                 }
 
-                // Summary
                 final uniqueUsers = <String>{};
                 for (final d in docs) {
                   uniqueUsers.add((d.data()['userId'] ?? '').toString());
                 }
 
-                // Group by day
                 final Map<String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>
                     byDay = {};
                 for (final d in docs) {
@@ -310,7 +394,8 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   }
 }
 
-/// Section for a single day
+// ======== below: same widgets as قبل ========
+
 class _DaySection extends StatelessWidget {
   final String day;
   final List<QueryDocumentSnapshot<Map<String, dynamic>>> items;
@@ -340,7 +425,7 @@ class _DaySection extends StatelessWidget {
         ...items.map((d) {
           final m = d.data();
           final uid = (m['userId'] ?? '').toString();
-          final typ = (m['type'] ?? '').toString(); // in / out
+          final typ = (m['type'] ?? '').toString();
           final branchId = (m['branchId'] ?? '').toString();
           final shiftId = (m['shiftId'] ?? '').toString();
           final lat = (m['lat'] ?? 0).toString();
@@ -379,10 +464,7 @@ class _DaySection extends StatelessWidget {
                           const SizedBox(width: 8),
                           if (usedDifferentBranch)
                             Chip(
-                              label: const Text(
-                                'Other branch',
-                                style: TextStyle(color: Colors.white),
-                              ),
+                              label: const Text('Other branch', style: TextStyle(color: Colors.white)),
                               backgroundColor: Colors.indigo,
                               visualDensity: VisualDensity.compact,
                             ),
@@ -419,7 +501,6 @@ class _DaySection extends StatelessWidget {
   }
 }
 
-/// Avatar with photo if available, otherwise first letter
 class _Avatar extends StatelessWidget {
   final String avatarUrl;
   final String name;
@@ -440,17 +521,12 @@ class _Avatar extends StatelessWidget {
   }
 }
 
-/// Nice filter button
 class _FilterButton extends StatelessWidget {
   final IconData icon;
   final String label;
   final VoidCallback onTap;
 
-  const _FilterButton({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-  });
+  const _FilterButton({required this.icon, required this.label, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -465,7 +541,6 @@ class _FilterButton extends StatelessWidget {
   }
 }
 
-/// Clear error box
 class _ErrorBox extends StatelessWidget {
   final String error;
   const _ErrorBox({required this.error});
@@ -489,7 +564,6 @@ class _ErrorBox extends StatelessWidget {
   }
 }
 
-// Small helper for null-safe elementAt
 extension<T> on List<T> {
   T? elementAtOrNull(int index) => (index >= 0 && index < length) ? this[index] : null;
 }
