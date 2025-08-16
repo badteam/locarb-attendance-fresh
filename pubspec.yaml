@@ -14,10 +14,9 @@ dependencies:
   firebase_core: ^2.28.0
   firebase_auth: 4.16.0
   cloud_firestore: 4.15.0
-  
 
   # State / UI
-provider: 6.1.2
+  provider: 6.1.2
 
   # Export
   excel: 2.1.0         # ← مثبت (يدعم setColWidth و CellStyle.backgroundColorHex)
