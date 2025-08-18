@@ -1,7 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
-/// خيار عام لعرض العناصر في القوائم (Branches/Shifts)
+/// عنصر بسيط لعرض الخيارات (الفروع/الشفتات)
 class Option {
   final String id;
   final String name;
@@ -55,6 +55,7 @@ class AdminUsersScreen extends StatelessWidget {
                       final uDoc = users[i];
                       final u = uDoc.data();
                       final uid = uDoc.id;
+
                       final fullName = (u['fullName'] ?? u['username'] ?? uid).toString();
                       final email    = (u['email'] ?? '').toString();
                       final photoUrl = (u['photoUrl'] ?? '').toString();
@@ -95,7 +96,7 @@ class AdminUsersScreen extends StatelessWidget {
                             Text(email, maxLines: 1, overflow: TextOverflow.ellipsis),
                             const SizedBox(height: 6),
 
-                            // السطر الخاص بالفرع والشفت (عرض فقط هنا)
+                            // عرض الفرع والشفت الحاليين
                             Wrap(
                               spacing: 8,
                               runSpacing: 4,
@@ -113,13 +114,13 @@ class AdminUsersScreen extends StatelessWidget {
                           ],
                         ),
 
-                        // أدوات التحكم (Approve / Branch dropdown / Shift dropdown)
+                        // أدوات التحكم
                         trailing: ConstrainedBox(
-                          constraints: const BoxConstraints(maxWidth: 420),
+                          constraints: const BoxConstraints(maxWidth: 560),
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              // زر الموافقة لو Pending
+                              // موافقة المستخدم
                               if (status != 'approved')
                                 IconButton.filledTonal(
                                   tooltip: 'Approve user',
@@ -135,7 +136,7 @@ class AdminUsersScreen extends StatelessWidget {
 
                               const SizedBox(width: 8),
 
-                              // اختيار الفرع (موجود سابقًا، بيساعدك تفضل شايفه)
+                              // اختيار الفرع
                               DropdownButton<String>(
                                 value: currentBranchId.isEmpty ? null : currentBranchId,
                                 hint: const Text('Branch'),
@@ -157,7 +158,7 @@ class AdminUsersScreen extends StatelessWidget {
 
                               const SizedBox(width: 8),
 
-                              // ✅ اختيار الشفت — الجديد
+                              // اختيار الشفت
                               DropdownButton<String>(
                                 value: currentShiftId.isEmpty ? null : currentShiftId,
                                 hint: const Text('Shift'),
@@ -175,6 +176,28 @@ class AdminUsersScreen extends StatelessWidget {
                                   }, SetOptions(merge: true));
                                   _toast(context, val == null || val.isEmpty ? 'Shift cleared' : 'Shift updated');
                                 },
+                              ),
+
+                              const SizedBox(width: 8),
+
+                              // Payroll
+                              FilledButton.tonal(
+                                onPressed: () => showDialog(
+                                  context: context,
+                                  builder: (_) => _EditPayrollDialog(uid: uid, userName: fullName),
+                                ),
+                                child: const Text('Edit Payroll'),
+                              ),
+
+                              const SizedBox(width: 8),
+
+                              // Leave
+                              OutlinedButton(
+                                onPressed: () => showDialog(
+                                  context: context,
+                                  builder: (_) => _EditLeaveDialog(uid: uid, userName: fullName),
+                                ),
+                                child: const Text('Leave'),
                               ),
                             ],
                           ),
@@ -245,6 +268,274 @@ class _InfoPill extends StatelessWidget {
           Text(label, style: const TextStyle(fontSize: 12)),
         ],
       ),
+    );
+  }
+}
+
+/* ======================== Payroll Edit Dialog ========================= */
+
+class _EditPayrollDialog extends StatefulWidget {
+  final String uid;
+  final String userName;
+  const _EditPayrollDialog({required this.uid, required this.userName});
+
+  @override
+  State<_EditPayrollDialog> createState() => _EditPayrollDialogState();
+}
+
+class _EditPayrollDialogState extends State<_EditPayrollDialog> {
+  final _salary = TextEditingController();
+  final _overtimeRate = TextEditingController();
+  List<Map<String, dynamic>> _allowances = [];
+  List<Map<String, dynamic>> _deductions = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final doc = await FirebaseFirestore.instance.collection('users').doc(widget.uid).get();
+    final m = doc.data() ?? {};
+    _salary.text = ((m['salaryBase'] ?? 0) as num).toString();
+    _overtimeRate.text = ((m['overtimeRate'] ?? 0) as num).toString();
+    _allowances = List<Map<String, dynamic>>.from(m['allowances'] ?? []);
+    _deductions = List<Map<String, dynamic>>.from(m['deductions'] ?? []);
+    if (mounted) setState(() {});
+  }
+
+  void _addLine(List<Map<String, dynamic>> list) {
+    list.add({'name': '', 'amount': 0});
+    setState(() {});
+  }
+
+  Widget _moneyField(String hint, void Function(String) onChanged, String initial) {
+    final c = TextEditingController(text: initial);
+    return SizedBox(
+      width: 130,
+      child: TextField(
+        keyboardType: TextInputType.number,
+        decoration: InputDecoration(hintText: hint),
+        onChanged: onChanged,
+        controller: c,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('Payroll • ${widget.userName}'),
+      content: SizedBox(
+        width: 600,
+        child: SingleChildScrollView(
+          child: Column(
+            children: [
+              TextField(
+                controller: _salary,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'Base salary (monthly)'),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _overtimeRate,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'Overtime rate (per hour)'),
+              ),
+              const SizedBox(height: 12),
+
+              // Allowances
+              Row(
+                children: [
+                  Text('Allowances', style: Theme.of(context).textTheme.titleMedium),
+                  const Spacer(),
+                  IconButton(onPressed: () => _addLine(_allowances), icon: const Icon(Icons.add)),
+                ],
+              ),
+              ..._allowances.asMap().entries.map((e) {
+                final i = e.key;
+                final item = e.value;
+                final nameC = TextEditingController(text: (item['name'] ?? '').toString());
+                final amtC  = TextEditingController(text: (item['amount'] ?? 0).toString());
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: nameC,
+                          decoration: const InputDecoration(hintText: 'Name'),
+                          onChanged: (v) => item['name'] = v,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      SizedBox(
+                        width: 130,
+                        child: TextField(
+                          controller: amtC,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(hintText: 'Amount'),
+                          onChanged: (v) => item['amount'] = num.tryParse(v) ?? 0,
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => setState(() => _allowances.removeAt(i)),
+                        icon: const Icon(Icons.delete_outline),
+                      ),
+                    ],
+                  ),
+                );
+              }),
+
+              const SizedBox(height: 12),
+
+              // Deductions
+              Row(
+                children: [
+                  Text('Deductions', style: Theme.of(context).textTheme.titleMedium),
+                  const Spacer(),
+                  IconButton(onPressed: () => _addLine(_deductions), icon: const Icon(Icons.add)),
+                ],
+              ),
+              ..._deductions.asMap().entries.map((e) {
+                final i = e.key;
+                final item = e.value;
+                final nameC = TextEditingController(text: (item['name'] ?? '').toString());
+                final amtC  = TextEditingController(text: (item['amount'] ?? 0).toString());
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: nameC,
+                          decoration: const InputDecoration(hintText: 'Name'),
+                          onChanged: (v) => item['name'] = v,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      SizedBox(
+                        width: 130,
+                        child: TextField(
+                          controller: amtC,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(hintText: 'Amount'),
+                          onChanged: (v) => item['amount'] = num.tryParse(v) ?? 0,
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => setState(() => _deductions.removeAt(i)),
+                        icon: const Icon(Icons.delete_outline),
+                      ),
+                    ],
+                  ),
+                );
+              }),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        FilledButton(
+          onPressed: () async {
+            final payload = {
+              'salaryBase': num.tryParse(_salary.text.trim()) ?? 0,
+              'overtimeRate': num.tryParse(_overtimeRate.text.trim()) ?? 0,
+              'allowances': _allowances
+                  .where((e) => (e['name'] ?? '').toString().trim().isNotEmpty)
+                  .map((e) => {'name': e['name'], 'amount': (e['amount'] ?? 0) as num})
+                  .toList(),
+              'deductions': _deductions
+                  .where((e) => (e['name'] ?? '').toString().trim().isNotEmpty)
+                  .map((e) => {'name': e['name'], 'amount': (e['amount'] ?? 0) as num})
+                  .toList(),
+              'updatedAt': FieldValue.serverTimestamp(),
+            };
+            await FirebaseFirestore.instance.collection('users').doc(widget.uid).set(
+                  payload,
+                  SetOptions(merge: true),
+                );
+            if (mounted) Navigator.pop(context);
+          },
+          child: const Text('Save'),
+        ),
+      ],
+    );
+  }
+}
+
+/* ======================== Leave Balance Dialog ======================== */
+
+class _EditLeaveDialog extends StatefulWidget {
+  final String uid;
+  final String userName;
+  const _EditLeaveDialog({required this.uid, required this.userName});
+
+  @override
+  State<_EditLeaveDialog> createState() => _EditLeaveDialogState();
+}
+
+class _EditLeaveDialogState extends State<_EditLeaveDialog> {
+  final _annual = TextEditingController();
+  final _carried = TextEditingController();
+  final _consumed = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final doc = await FirebaseFirestore.instance.collection('users').doc(widget.uid).get();
+    final m = doc.data() ?? {};
+    final leave = Map<String, dynamic>.from(m['leaveBalance'] ?? {});
+    _annual.text = ((leave['annualAllocated'] ?? 0) as num).toString();
+    _carried.text = ((leave['carried'] ?? 0) as num).toString();
+    _consumed.text = ((leave['consumed'] ?? 0) as num).toString();
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('Leave balance • ${widget.userName}'),
+      content: SizedBox(
+        width: 420,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(controller: _annual,   keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Annual allocated')),
+            const SizedBox(height: 8),
+            TextField(controller: _carried,  keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Carried over')),
+            const SizedBox(height: 8),
+            TextField(controller: _consumed, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Consumed (used)')),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        FilledButton(
+          onPressed: () async {
+            final payload = {
+              'leaveBalance': {
+                'annualAllocated': num.tryParse(_annual.text.trim()) ?? 0,
+                'carried': num.tryParse(_carried.text.trim()) ?? 0,
+                'consumed': num.tryParse(_consumed.text.trim()) ?? 0,
+              },
+              'updatedAt': FieldValue.serverTimestamp(),
+            };
+            await FirebaseFirestore.instance.collection('users').doc(widget.uid).set(
+                  payload,
+                  SetOptions(merge: true),
+                );
+            if (mounted) Navigator.pop(context);
+          },
+          child: const Text('Save'),
+        ),
+      ],
     );
   }
 }
