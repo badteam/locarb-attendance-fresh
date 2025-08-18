@@ -1,278 +1,446 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
-/// عنصر بسيط لعرض الخيارات (الفروع/الشفتات)
 class Option {
   final String id;
   final String name;
   const Option(this.id, this.name);
 }
 
-class AdminUsersScreen extends StatelessWidget {
+const kRoles = <String>[
+  'employee',
+  'supervisor',
+  'branchManager',
+  'admin',
+];
+
+class AdminUsersScreen extends StatefulWidget {
   const AdminUsersScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final branchesQ = FirebaseFirestore.instance.collection('branches').orderBy('name');
-    final shiftsQ   = FirebaseFirestore.instance.collection('shifts').orderBy('name');
-    final usersQ    = FirebaseFirestore.instance.collection('users').orderBy('fullName');
-
-    return Scaffold(
-      appBar: AppBar(title: const Text('Users')),
-      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: branchesQ.snapshots(),
-        builder: (context, bSnap) {
-          final branches = (bSnap.data?.docs ?? [])
-              .map((d) => Option(d.id, (d.data()['name'] ?? d.id).toString()))
-              .toList();
-
-          return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-            stream: shiftsQ.snapshots(),
-            builder: (context, sSnap) {
-              final shifts = (sSnap.data?.docs ?? [])
-                  .map((d) => Option(d.id, (d.data()['name'] ?? d.id).toString()))
-                  .toList();
-
-              return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                stream: usersQ.snapshots(),
-                builder: (context, uSnap) {
-                  if (uSnap.connectionState == ConnectionState.waiting) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-                  if (uSnap.hasError) {
-                    return Center(child: Text('Error: ${uSnap.error}'));
-                  }
-                  final users = uSnap.data?.docs ?? [];
-                  if (users.isEmpty) {
-                    return const Center(child: Text('No users found'));
-                  }
-
-                  return ListView.separated(
-                    padding: const EdgeInsets.all(12),
-                    itemCount: users.length,
-                    separatorBuilder: (_, __) => const Divider(height: 1),
-                    itemBuilder: (_, i) {
-                      final uDoc = users[i];
-                      final u = uDoc.data();
-                      final uid = uDoc.id;
-
-                      final fullName = (u['fullName'] ?? u['username'] ?? uid).toString();
-                      final email    = (u['email'] ?? '').toString();
-                      final photoUrl = (u['photoUrl'] ?? '').toString();
-                      final role     = (u['role'] ?? 'employee').toString();
-                      final status   = (u['status'] ?? 'pending').toString();
-
-                      final currentBranchId = (u['primaryBranchId'] ?? '').toString();
-                      final currentShiftId  = (u['assignedShiftId'] ?? '').toString();
-
-                      final currentBranch = branches.where((o) => o.id == currentBranchId).toList();
-                      final currentShift  = shifts.where((o) => o.id == currentShiftId).toList();
-
-                      return ListTile(
-                        leading: CircleAvatar(
-                          backgroundImage: photoUrl.isNotEmpty ? NetworkImage(photoUrl) : null,
-                          child: photoUrl.isEmpty
-                              ? Text(fullName.isNotEmpty ? fullName[0].toUpperCase() : 'U')
-                              : null,
-                        ),
-                        title: Row(
-                          children: [
-                            Expanded(child: Text(fullName, overflow: TextOverflow.ellipsis)),
-                            const SizedBox(width: 8),
-                            _Chip(text: role, icon: Icons.badge_outlined),
-                            const SizedBox(width: 6),
-                            _Chip(
-                              text: status,
-                              icon: status == 'approved' ? Icons.verified_user_outlined : Icons.hourglass_top_outlined,
-                              color: status == 'approved'
-                                  ? Theme.of(context).colorScheme.secondaryContainer
-                                  : Theme.of(context).colorScheme.surfaceVariant,
-                            ),
-                          ],
-                        ),
-                        subtitle: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(email, maxLines: 1, overflow: TextOverflow.ellipsis),
-                            const SizedBox(height: 6),
-
-                            // عرض الفرع والشفت الحاليين
-                            Wrap(
-                              spacing: 8,
-                              runSpacing: 4,
-                              children: [
-                                _InfoPill(
-                                  icon: Icons.storefront_outlined,
-                                  label: currentBranch.isNotEmpty ? currentBranch.first.name : 'No branch',
-                                ),
-                                _InfoPill(
-                                  icon: Icons.access_time,
-                                  label: currentShift.isNotEmpty ? currentShift.first.name : 'No shift',
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-
-                        // أدوات التحكم
-                        trailing: ConstrainedBox(
-                          constraints: const BoxConstraints(maxWidth: 560),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              // موافقة المستخدم
-                              if (status != 'approved')
-                                IconButton.filledTonal(
-                                  tooltip: 'Approve user',
-                                  icon: const Icon(Icons.check),
-                                  onPressed: () async {
-                                    await FirebaseFirestore.instance.collection('users').doc(uid).set({
-                                      'status': 'approved',
-                                      'updatedAt': FieldValue.serverTimestamp(),
-                                    }, SetOptions(merge: true));
-                                    _toast(context, 'User approved');
-                                  },
-                                ),
-
-                              const SizedBox(width: 8),
-
-                              // اختيار الفرع
-                              DropdownButton<String>(
-                                value: currentBranchId.isEmpty ? null : currentBranchId,
-                                hint: const Text('Branch'),
-                                items: [
-                                  const DropdownMenuItem(value: '', child: Text('No branch')),
-                                  ...branches.map((o) => DropdownMenuItem(value: o.id, child: Text(o.name))),
-                                ],
-                                onChanged: (val) async {
-                                  await FirebaseFirestore.instance.collection('users').doc(uid).set({
-                                    if (val == null || val.isEmpty)
-                                      'primaryBranchId': FieldValue.delete()
-                                    else
-                                      'primaryBranchId': val,
-                                    'updatedAt': FieldValue.serverTimestamp(),
-                                  }, SetOptions(merge: true));
-                                  _toast(context, val == null || val.isEmpty ? 'Branch cleared' : 'Branch updated');
-                                },
-                              ),
-
-                              const SizedBox(width: 8),
-
-                              // اختيار الشفت
-                              DropdownButton<String>(
-                                value: currentShiftId.isEmpty ? null : currentShiftId,
-                                hint: const Text('Shift'),
-                                items: [
-                                  const DropdownMenuItem(value: '', child: Text('No shift')),
-                                  ...shifts.map((o) => DropdownMenuItem(value: o.id, child: Text(o.name))),
-                                ],
-                                onChanged: (val) async {
-                                  await FirebaseFirestore.instance.collection('users').doc(uid).set({
-                                    if (val == null || val.isEmpty)
-                                      'assignedShiftId': FieldValue.delete()
-                                    else
-                                      'assignedShiftId': val,
-                                    'updatedAt': FieldValue.serverTimestamp(),
-                                  }, SetOptions(merge: true));
-                                  _toast(context, val == null || val.isEmpty ? 'Shift cleared' : 'Shift updated');
-                                },
-                              ),
-
-                              const SizedBox(width: 8),
-
-                              // Payroll
-                              FilledButton.tonal(
-                                onPressed: () => showDialog(
-                                  context: context,
-                                  builder: (_) => _EditPayrollDialog(uid: uid, userName: fullName),
-                                ),
-                                child: const Text('Edit Payroll'),
-                              ),
-
-                              const SizedBox(width: 8),
-
-                              // Leave
-                              OutlinedButton(
-                                onPressed: () => showDialog(
-                                  context: context,
-                                  builder: (_) => _EditLeaveDialog(uid: uid, userName: fullName),
-                                ),
-                                child: const Text('Leave'),
-                              ),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
-                  );
-                },
-              );
-            },
-          );
-        },
-      ),
-    );
-  }
-
-  void _toast(BuildContext context, String msg) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-  }
+  State<AdminUsersScreen> createState() => _AdminUsersScreenState();
 }
 
-/* ============================= UI Helpers ============================== */
-
-class _Chip extends StatelessWidget {
-  final String text;
-  final IconData icon;
-  final Color? color;
-  const _Chip({required this.text, required this.icon, this.color});
+class _AdminUsersScreenState extends State<AdminUsersScreen> {
+  String _tab = 'pending'; // pending | approved
+  String _search = '';
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: color ?? Theme.of(context).colorScheme.surfaceVariant,
-        borderRadius: BorderRadius.circular(8),
+    final branchesQ =
+        FirebaseFirestore.instance.collection('branches').orderBy('name');
+    final shiftsQ =
+        FirebaseFirestore.instance.collection('shifts').orderBy('name');
+
+    // users query + filter
+    Query<Map<String, dynamic>> usersQ = FirebaseFirestore.instance
+        .collection('users')
+        .orderBy('fullName', descending: false);
+
+    usersQ = usersQ.where('status', isEqualTo: _tab);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Users'),
+        actions: [
+          // تبويبات بسيطة Pending/Approved
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(value: 'pending', label: Text('Pending')),
+                ButtonSegment(value: 'approved', label: Text('Approved')),
+              ],
+              selected: {_tab},
+              onSelectionChanged: (s) => setState(() => _tab = s.first),
+            ),
+          ),
+        ],
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
+      body: Column(
         children: [
-          Icon(icon, size: 14),
-          const SizedBox(width: 4),
-          Text(text, style: const TextStyle(fontSize: 12)),
+          // شريط بحث
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+            child: TextField(
+              decoration: const InputDecoration(
+                prefixIcon: Icon(Icons.search),
+                hintText: 'Search by name or email',
+                border: OutlineInputBorder(),
+              ),
+              onChanged: (v) => setState(() => _search = v.trim().toLowerCase()),
+            ),
+          ),
+
+          Expanded(
+            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: branchesQ.snapshots(),
+              builder: (context, bSnap) {
+                final branches = (bSnap.data?.docs ?? [])
+                    .map((d) => Option(d.id, (d.data()['name'] ?? d.id).toString()))
+                    .toList();
+
+                return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                  stream: shiftsQ.snapshots(),
+                  builder: (context, sSnap) {
+                    final shifts = (sSnap.data?.docs ?? [])
+                        .map((d) => Option(d.id, (d.data()['name'] ?? d.id).toString()))
+                        .toList();
+
+                    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                      stream: usersQ.snapshots(),
+                      builder: (context, uSnap) {
+                        if (uSnap.connectionState == ConnectionState.waiting) {
+                          return const Center(child: CircularProgressIndicator());
+                        }
+                        if (uSnap.hasError) {
+                          return Center(child: Text('Error: ${uSnap.error}'));
+                        }
+                        var users = uSnap.data?.docs ?? [];
+
+                        // فلترة البحث
+                        if (_search.isNotEmpty) {
+                          users = users.where((u) {
+                            final m = u.data();
+                            final name = (m['fullName'] ?? m['username'] ?? '').toString().toLowerCase();
+                            final email = (m['email'] ?? '').toString().toLowerCase();
+                            return name.contains(_search) || email.contains(_search);
+                          }).toList();
+                        }
+
+                        if (users.isEmpty) {
+                          return const Center(child: Text('No users'));
+                        }
+
+                        return ListView.builder(
+                          padding: const EdgeInsets.fromLTRB(12, 8, 12, 20),
+                          itemCount: users.length,
+                          itemBuilder: (_, i) {
+                            final uDoc = users[i];
+                            final u = uDoc.data();
+                            return _UserCard(
+                              uid: uDoc.id,
+                              data: u,
+                              branches: branches,
+                              shifts: shifts,
+                              tab: _tab,
+                              onChanged: () => ScaffoldMessenger.of(context)
+                                  .showSnackBar(const SnackBar(content: Text('Saved'))),
+                            );
+                          },
+                        );
+                      },
+                    );
+                  },
+                );
+              },
+            ),
+          ),
         ],
       ),
     );
   }
 }
 
-class _InfoPill extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  const _InfoPill({required this.icon, required this.label});
+/* -------------------------- User Card (compact) -------------------------- */
+
+class _UserCard extends StatefulWidget {
+  final String uid;
+  final Map<String, dynamic> data;
+  final List<Option> branches;
+  final List<Option> shifts;
+  final String tab; // pending | approved
+  final VoidCallback onChanged;
+
+  const _UserCard({
+    required this.uid,
+    required this.data,
+    required this.branches,
+    required this.shifts,
+    required this.tab,
+    required this.onChanged,
+  });
+
+  @override
+  State<_UserCard> createState() => _UserCardState();
+}
+
+class _UserCardState extends State<_UserCard> {
+  bool _expanded = false;
+
+  Future<void> _setUser(Map<String, dynamic> payload) async {
+    await FirebaseFirestore.instance
+        .collection('users')
+        .doc(widget.uid)
+        .set(payload, SetOptions(merge: true));
+    widget.onChanged();
+  }
+
+  Future<void> _approveAs(String role) async {
+    await _setUser({
+      'status': 'approved',
+      'role': role,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
+    final m = widget.data;
+    final name = (m['fullName'] ?? m['username'] ?? widget.uid).toString();
+    final email = (m['email'] ?? '').toString();
+    final role = (m['role'] ?? 'employee').toString();
+    final photoUrl = (m['photoUrl'] ?? '').toString();
+
+    final branchId = (m['primaryBranchId'] ?? '').toString();
+    final shiftId = (m['assignedShiftId'] ?? '').toString();
+
+    final branchName = widget.branches.firstWhere(
+      (o) => o.id == branchId,
+      orElse: () => const Option('', 'No branch'),
+    ).name;
+
+    final shiftName = widget.shifts.firstWhere(
+      (o) => o.id == shiftId,
+      orElse: () => const Option('', 'No shift'),
+    ).name;
+
+    return Card(
+      elevation: 0,
+      child: ExpansionTile(
+        initiallyExpanded: false,
+        onExpansionChanged: (x) => setState(() => _expanded = x),
+        leading: CircleAvatar(
+          backgroundImage: photoUrl.isNotEmpty ? NetworkImage(photoUrl) : null,
+          child: photoUrl.isEmpty ? Text(name.isNotEmpty ? name[0].toUpperCase() : 'U') : null,
+        ),
+        title: Row(
+          children: [
+            Expanded(child: Text(name, overflow: TextOverflow.ellipsis)),
+            const SizedBox(width: 8),
+            _rolePill(role),
+            const SizedBox(width: 6),
+            _statusPill((m['status'] ?? 'pending').toString()),
+          ],
+        ),
+        subtitle: Text(email, maxLines: 1, overflow: TextOverflow.ellipsis),
+
+        // زرار أكشنات صغير مرتب
+        trailing: PopupMenuButton<String>(
+          tooltip: 'Actions',
+          onSelected: (key) async {
+            switch (key) {
+              case 'approve_employee':
+                await _approveAs('employee');
+                break;
+              case 'approve_supervisor':
+                await _approveAs('supervisor');
+                break;
+              case 'approve_manager':
+                await _approveAs('branchManager');
+                break;
+              case 'approve_admin':
+                await _approveAs('admin');
+                break;
+              case 'make_employee':
+              case 'make_supervisor':
+              case 'make_manager':
+              case 'make_admin':
+                final setRole = {
+                  'make_employee': 'employee',
+                  'make_supervisor': 'supervisor',
+                  'make_manager': 'branchManager',
+                  'make_admin': 'admin',
+                }[key]!;
+                await _setUser({'role': setRole, 'updatedAt': FieldValue.serverTimestamp()});
+                break;
+            }
+          },
+          itemBuilder: (ctx) => [
+            if (widget.tab == 'pending') ...[
+              const PopupMenuItem(value: 'approve_employee', child: Text('Approve as • Employee')),
+              const PopupMenuItem(value: 'approve_supervisor', child: Text('Approve as • Supervisor')),
+              const PopupMenuItem(value: 'approve_manager', child: Text('Approve as • Branch Manager')),
+              const PopupMenuItem(value: 'approve_admin', child: Text('Approve as • Admin')),
+              const PopupMenuDivider(),
+            ],
+            const PopupMenuItem(value: 'make_employee', child: Text('Set role: Employee')),
+            const PopupMenuItem(value: 'make_supervisor', child: Text('Set role: Supervisor')),
+            const PopupMenuItem(value: 'make_manager', child: Text('Set role: Branch Manager')),
+            const PopupMenuItem(value: 'make_admin', child: Text('Set role: Admin')),
+          ],
+          child: const Icon(Icons.more_horiz),
+        ),
+
+        children: [
+          if (_expanded)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 8,
+                    children: [
+                      _infoChip(Icons.storefront_outlined, branchName),
+                      _infoChip(Icons.access_time, shiftName),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+
+                  // سطر إعدادات سريعة: الفرع + الشفت + الدور
+                  Row(
+                    children: [
+                      // Branch
+                      Expanded(
+                        child: DropdownButtonFormField<String>(
+                          value: branchId.isEmpty ? null : branchId,
+                          decoration: const InputDecoration(
+                            labelText: 'Branch',
+                            border: OutlineInputBorder(),
+                          ),
+                          items: [
+                            const DropdownMenuItem(value: '', child: Text('No branch')),
+                            ...widget.branches.map(
+                              (o) => DropdownMenuItem(value: o.id, child: Text(o.name)),
+                            ),
+                          ],
+                          onChanged: (v) => _setUser({
+                            if (v == null || v.isEmpty)
+                              'primaryBranchId': FieldValue.delete()
+                            else
+                              'primaryBranchId': v,
+                            'updatedAt': FieldValue.serverTimestamp(),
+                          }),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+
+                      // Shift
+                      Expanded(
+                        child: DropdownButtonFormField<String>(
+                          value: shiftId.isEmpty ? null : shiftId,
+                          decoration: const InputDecoration(
+                            labelText: 'Shift',
+                            border: OutlineInputBorder(),
+                          ),
+                          items: [
+                            const DropdownMenuItem(value: '', child: Text('No shift')),
+                            ...widget.shifts.map(
+                              (o) => DropdownMenuItem(value: o.id, child: Text(o.name)),
+                            ),
+                          ],
+                          onChanged: (v) => _setUser({
+                            if (v == null || v.isEmpty)
+                              'assignedShiftId': FieldValue.delete()
+                            else
+                              'assignedShiftId': v,
+                            'updatedAt': FieldValue.serverTimestamp(),
+                          }),
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  const SizedBox(height: 12),
+
+                  // اختيار الدور سريع
+                  DropdownButtonFormField<String>(
+                    value: kRoles.contains(role) ? role : 'employee',
+                    decoration: const InputDecoration(
+                      labelText: 'Role',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: kRoles
+                        .map((r) => DropdownMenuItem(value: r, child: Text(r)))
+                        .toList(),
+                    onChanged: (r) => _setUser({
+                      'role': r,
+                      'updatedAt': FieldValue.serverTimestamp(),
+                    }),
+                  ),
+
+                  const SizedBox(height: 14),
+
+                  // أزرار فرعية صغيرة (Payroll / Leave)
+                  Row(
+                    children: [
+                      FilledButton.tonal(
+                        onPressed: () => showDialog(
+                          context: context,
+                          builder: (_) => _EditPayrollDialog(uid: widget.uid, userName: name),
+                        ),
+                        child: const Text('Edit Payroll'),
+                      ),
+                      const SizedBox(width: 8),
+                      OutlinedButton(
+                        onPressed: () => showDialog(
+                          context: context,
+                          builder: (_) => _EditLeaveDialog(uid: widget.uid, userName: name),
+                        ),
+                        child: const Text('Leave'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _statusPill(String status) {
+    final ok = status == 'approved';
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: ok
+            ? Colors.green.withOpacity(.15)
+            : Colors.orange.withOpacity(.15),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(ok ? Icons.verified_user_outlined : Icons.hourglass_top_outlined, size: 14),
+        const SizedBox(width: 4),
+        Text(status, style: const TextStyle(fontSize: 12)),
+      ]),
+    );
+  }
+
+  Widget _rolePill(String role) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceVariant,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        const Icon(Icons.badge_outlined, size: 14),
+        const SizedBox(width: 4),
+        Text(role, style: const TextStyle(fontSize: 12)),
+      ]),
+    );
+  }
+
+  Widget _infoChip(IconData ic, String label) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.secondaryContainer,
         borderRadius: BorderRadius.circular(12),
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 14),
-          const SizedBox(width: 6),
-          Text(label, style: const TextStyle(fontSize: 12)),
-        ],
-      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(ic, size: 14),
+        const SizedBox(width: 6),
+        Text(label, style: const TextStyle(fontSize: 12)),
+      ]),
     );
   }
 }
 
-/* ======================== Payroll Edit Dialog ========================= */
+/* ======================== Payroll Dialog (كما هو) ======================== */
 
 class _EditPayrollDialog extends StatefulWidget {
   final String uid;
@@ -310,19 +478,6 @@ class _EditPayrollDialogState extends State<_EditPayrollDialog> {
     setState(() {});
   }
 
-  Widget _moneyField(String hint, void Function(String) onChanged, String initial) {
-    final c = TextEditingController(text: initial);
-    return SizedBox(
-      width: 130,
-      child: TextField(
-        keyboardType: TextInputType.number,
-        decoration: InputDecoration(hintText: hint),
-        onChanged: onChanged,
-        controller: c,
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
@@ -344,8 +499,6 @@ class _EditPayrollDialogState extends State<_EditPayrollDialog> {
                 decoration: const InputDecoration(labelText: 'Overtime rate (per hour)'),
               ),
               const SizedBox(height: 12),
-
-              // Allowances
               Row(
                 children: [
                   Text('Allowances', style: Theme.of(context).textTheme.titleMedium),
@@ -387,10 +540,7 @@ class _EditPayrollDialogState extends State<_EditPayrollDialog> {
                   ),
                 );
               }),
-
               const SizedBox(height: 12),
-
-              // Deductions
               Row(
                 children: [
                   Text('Deductions', style: Theme.of(context).textTheme.titleMedium),
@@ -466,7 +616,7 @@ class _EditPayrollDialogState extends State<_EditPayrollDialog> {
   }
 }
 
-/* ======================== Leave Balance Dialog ======================== */
+/* ======================== Leave Dialog (كما هو) ======================== */
 
 class _EditLeaveDialog extends StatefulWidget {
   final String uid;
