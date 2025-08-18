@@ -1,10 +1,28 @@
 // lib/screens/admin_user_screen.dart
 import 'dart:convert';
-import 'dart:html' as html; // لتنزيل ملف CSV على الويب
+import 'dart:html' as html; // لتنزيل CSV على الويب
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+
+/* ======================= Top-level roles & labels ======================= */
+
+const List<String> kRoles = [
+  'admin',
+  'branch_manager',
+  'supervisor',
+  'employee',
+];
+
+const Map<String, String> kRoleLabels = {
+  'admin': 'Admin',
+  'branch_manager': 'Branch Manager',
+  'supervisor': 'Supervisor',
+  'employee': 'Employee',
+};
+
+/* =============================== Screen ================================= */
 
 class AdminUsersScreen extends StatefulWidget {
   const AdminUsersScreen({super.key});
@@ -19,27 +37,13 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
   // بحث
   String _search = '';
   // فلاتر
-  String _roleFilter = 'all'; // all | admin | branch_manager | supervisor | employee
+  String _roleFilter = 'all';     // all | {role}
   String _branchFilterId = 'all'; // all | {branchId}
   String _shiftFilterId = 'all';  // all | {shiftId}
 
   // دوري الحالي (لإظهار/إخفاء صلاحيات)
   String? _myRole;
   bool _loadingMyRole = true;
-
-  // أدوار النظام
-  static const List<String> kRoles = [
-    'admin',
-    'branch_manager',
-    'supervisor',
-    'employee',
-  ];
-  static const Map<String, String> kRoleLabels = {
-    'admin': 'Admin',
-    'branch_manager': 'Branch Manager',
-    'supervisor': 'Supervisor',
-    'employee': 'Employee',
-  };
 
   @override
   void initState() {
@@ -309,7 +313,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
     required String branchFilterId,
     required String shiftFilterId,
   }) async {
-    // نجلب Snapshot واحد (مرة) حسب حالة التبويب + نطبق الفلاتر في الذاكرة
+    // Snapshot واحد حسب حالة التبويب + نطبق الفلاتر في الذاكرة
     final snap = await usersQ.get();
     var users = snap.docs;
 
@@ -359,7 +363,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
       ]);
     }
 
-    // نحول إلى CSV (Excel-compatible)
+    // إلى CSV (Excel-compatible)
     final csv = const ListToCsvConverter().convert(rows);
     final bytes = utf8.encode(csv);
     final blob = html.Blob([bytes], 'text/csv;charset=utf-8;');
@@ -368,7 +372,8 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
     final dt = DateTime.now();
     final br = branchFilterId == 'all' ? 'ALL' : branchFilterId;
     final sh = shiftFilterId == 'all' ? 'ALL' : shiftFilterId;
-    final fileName = 'users_${_statusTab}_role-$roleFilter_branch-$br_shift-$sh_${dt.year}-${dt.month.toString().padLeft(2,'0')}-${dt.day.toString().padLeft(2,'0')}.csv';
+    final fileName =
+        'users_${_statusTab}_role-$roleFilter_branch-$br_shift-$sh_${dt.year}-${dt.month.toString().padLeft(2,'0')}-${dt.day.toString().padLeft(2,'0')}.csv';
 
     final anchor = html.AnchorElement(href: url)
       ..setAttribute('download', fileName)
@@ -399,9 +404,10 @@ class _UserCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
-    final name  = (data['fullName'] ?? data['username'] ?? '—').toString();
-    final email = (data['email'] ?? '').toString();
-    final role  = (data['role'] ?? 'employee').toString();
+    final name   = (data['fullName'] ?? data['username'] ?? '—').toString();
+    final email  = (data['email'] ?? '').toString();
+    final role0  = (data['role'] ?? 'employee').toString();
+    final role   = kRoles.contains(role0) ? role0 : 'employee';
     final status = (data['status'] ?? 'pending').toString();
 
     final branchName = (data['branchName'] ?? 'No branch').toString();
@@ -433,7 +439,10 @@ class _UserCard extends StatelessWidget {
                     children: [
                       Text(name, style: Theme.of(context).textTheme.titleMedium),
                       const SizedBox(height: 2),
-                      Text(email, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
+                      Text(
+                        email,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+                      ),
                     ],
                   ),
                 ),
@@ -446,7 +455,7 @@ class _UserCard extends StatelessWidget {
                     border: Border.all(color: roleColor(role, context).withOpacity(.35)),
                   ),
                   child: Text(
-                    _label(role),
+                    kRoleLabels[role] ?? role,
                     style: TextStyle(
                       color: roleColor(role, context),
                       fontWeight: FontWeight.w600,
@@ -516,7 +525,7 @@ class _UserCard extends StatelessWidget {
                 // تغيير الدور يظهر للأدمن فقط
                 if (isAdmin)
                   DropdownButton<String>(
-                    value: kRoles.contains(role) ? role : 'employee',
+                    value: role,
                     items: const [
                       DropdownMenuItem(value: 'admin', child: Text('Admin')),
                       DropdownMenuItem(value: 'branch_manager', child: Text('Branch Manager')),
@@ -564,19 +573,6 @@ class _UserCard extends StatelessWidget {
       ),
     );
   }
-
-  String _label(String role) {
-    switch (role) {
-      case 'admin':
-        return 'Admin';
-      case 'branch_manager':
-        return 'Branch Manager';
-      case 'supervisor':
-        return 'Supervisor';
-      default:
-        return 'Employee';
-    }
-  }
 }
 
 /* --------------------------- CSV Converter --------------------------- */
@@ -590,7 +586,7 @@ class ListToCsvConverter {
     for (final row in rows) {
       for (int i = 0; i < row.length; i++) {
         var cell = row[i]?.toString() ?? '';
-        // لفّ الحقول اللي فيها فواصل داخل علامات اقتباس
+        // لفّ الحقول اللي فيها فواصل أو سطور داخل علامات اقتباس
         if (cell.contains(fieldDelimiter) || cell.contains('\n') || cell.contains('"')) {
           cell = '"${cell.replaceAll('"', '""')}"';
         }
