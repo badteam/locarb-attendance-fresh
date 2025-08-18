@@ -44,22 +44,28 @@ class _BranchesShiftsScreenState extends State<BranchesShiftsScreen>
           _ShiftsTab(),
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () async {
-          if (_tab.index == 0) {
-            await _showBranchEditor(context);
-          } else {
-            await _showShiftEditor(context);
-          }
+      floatingActionButton: AnimatedBuilder(
+        animation: _tab,
+        builder: (context, _) {
+          final isBranches = _tab.index == 0;
+          return FloatingActionButton.extended(
+            onPressed: () async {
+              if (isBranches) {
+                await _showBranchEditor(context);
+              } else {
+                await _showShiftEditor(context);
+              }
+            },
+            icon: Icon(isBranches ? Icons.add_business : Icons.add_alarm),
+            label: Text(isBranches ? 'Add branch' : 'Add shift'),
+          );
         },
-        icon: const Icon(Icons.add),
-        label: Text(_tab.index == 0 ? 'Add branch' : 'Add shift'),
       ),
     );
   }
 }
 
-/* ------------------------------ Branches Tab ------------------------------ */
+/* =============================== Branches =============================== */
 
 class _BranchesTab extends StatelessWidget {
   const _BranchesTab();
@@ -70,16 +76,13 @@ class _BranchesTab extends StatelessWidget {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: ref.snapshots(),
       builder: (context, snap) {
-        if (snap.hasError) {
-          return _ErrorBox(error: snap.error.toString());
-        }
+        if (snap.hasError) return _ErrorBox('Error: ${snap.error}');
         if (snap.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator());
         }
         final docs = snap.data?.docs ?? [];
-        if (docs.isEmpty) {
-          return const Center(child: Text('No branches yet'));
-        }
+        if (docs.isEmpty) return const Center(child: Text('No branches yet'));
+
         return ListView.separated(
           padding: const EdgeInsets.fromLTRB(12, 12, 12, 96),
           itemCount: docs.length,
@@ -102,8 +105,19 @@ class _BranchesTab extends StatelessWidget {
                   if (lat.isNotEmpty && lng.isNotEmpty) '($lat, $lng)',
                   if (radius.isNotEmpty) 'radius: $radius m',
                 ].join(' • ')),
-                trailing: const Icon(Icons.edit),
-                onTap: () => _showBranchEditor(context, docId: d.id, data: m),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _BranchMembersCountChip(branchId: d.id),
+                    const SizedBox(width: 6),
+                    IconButton(
+                      icon: const Icon(Icons.edit),
+                      tooltip: 'Edit',
+                      onPressed: () => _showBranchEditor(context, docId: d.id, data: m),
+                    ),
+                  ],
+                ),
+                onTap: () => _showBranchMembers(context, branchId: d.id, branchName: name),
               ),
             );
           },
@@ -111,6 +125,110 @@ class _BranchesTab extends StatelessWidget {
       },
     );
   }
+}
+
+class _BranchMembersCountChip extends StatelessWidget {
+  final String branchId;
+  const _BranchMembersCountChip({required this.branchId});
+
+  @override
+  Widget build(BuildContext context) {
+    final q = FirebaseFirestore.instance
+        .collection('users')
+        .where('primaryBranchId', isEqualTo: branchId);
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: q.snapshots(),
+      builder: (context, snap) {
+        final count = snap.data?.docs.length ?? 0;
+        return InputChip(
+          label: Text('$count'),
+          avatar: const Icon(Icons.people, size: 18),
+          onPressed: () => _showBranchMembers(context, branchId: branchId),
+          tooltip: 'Assigned employees',
+        );
+      },
+    );
+  }
+}
+
+Future<void> _showBranchMembers(BuildContext context,
+    {required String branchId, String? branchName}) async {
+  final q = FirebaseFirestore.instance
+      .collection('users')
+      .where('primaryBranchId', isEqualTo: branchId)
+      .orderBy('fullName');
+
+  await showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    showDragHandle: true,
+    builder: (context) {
+      return Padding(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom,
+          left: 12,
+          right: 12,
+          top: 8,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.storefront),
+              title: Text(branchName ?? 'Branch'),
+              subtitle: const Text('Assigned employees'),
+            ),
+            Flexible(
+              child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                stream: q.snapshots(),
+                builder: (context, snap) {
+                  if (snap.hasError) {
+                    return _BottomError('Error: ${snap.error}');
+                  }
+                  if (!snap.hasData) {
+                    return const Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Center(child: CircularProgressIndicator()),
+                    );
+                  }
+                  final users = snap.data!.docs;
+                  if (users.isEmpty) {
+                    return const Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Center(child: Text('No employees assigned')),
+                    );
+                  }
+                  return ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: users.length,
+                    separatorBuilder: (_, __) => const Divider(height: 1),
+                    itemBuilder: (context, i) {
+                      final u = users[i].data();
+                      final fullName = (u['fullName'] ?? '').toString();
+                      final username = (u['username'] ?? '').toString();
+                      final photoUrl = (u['photoUrl'] ?? '').toString();
+                      return ListTile(
+                        leading: CircleAvatar(
+                          backgroundImage: photoUrl.isNotEmpty ? NetworkImage(photoUrl) : null,
+                          child: photoUrl.isEmpty
+                              ? Text((fullName.isNotEmpty ? fullName[0] : username.isNotEmpty ? username[0] : 'U')
+                                  .toUpperCase())
+                              : null,
+                        ),
+                        title: Text(fullName.isNotEmpty ? fullName : username),
+                        subtitle: Text(users[i].id),
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
+        ),
+      );
+    },
+  );
 }
 
 Future<void> _showBranchEditor(
@@ -155,27 +273,25 @@ Future<void> _showBranchEditor(
         } else {
           await col.doc(docId).set(payload, SetOptions(merge: true));
         }
-        // ignore: use_build_context_synchronously
-        Navigator.pop(context);
+        if (context.mounted) Navigator.pop(context);
       }
 
       Future<void> onDelete() async {
         if (docId == null) return;
         final ok = await showDialog<bool>(
           context: context,
-          builder: (_) => AlertDialog(
+          builder: (ctx) => AlertDialog(
             title: const Text('Delete branch?'),
             content: const Text('This action cannot be undone.'),
             actions: [
-              TextButton(onPressed: () => Navigator.pop(_, false), child: const Text('Cancel')),
-              FilledButton.tonal(onPressed: () => Navigator.pop(_, true), child: const Text('Delete')),
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+              FilledButton.tonal(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete')),
             ],
           ),
         );
         if (ok == true) {
           await FirebaseFirestore.instance.collection('branches').doc(docId).delete();
-          // ignore: use_build_context_synchronously
-          Navigator.pop(context);
+          if (context.mounted) Navigator.pop(context);
         }
       }
 
@@ -195,7 +311,7 @@ Future<void> _showBranchEditor(
                     child: TextField(
                       controller: latCtrl,
                       keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
-                      decoration: const InputDecoration(labelText: 'Latitude (e.g. 29.97)'),
+                      decoration: const InputDecoration(labelText: 'Latitude (e.g. 24.71)'),
                     ),
                   ),
                   const SizedBox(width: 8),
@@ -203,7 +319,7 @@ Future<void> _showBranchEditor(
                     child: TextField(
                       controller: lngCtrl,
                       keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
-                      decoration: const InputDecoration(labelText: 'Longitude (e.g. 31.25)'),
+                      decoration: const InputDecoration(labelText: 'Longitude (e.g. 46.67)'),
                     ),
                   ),
                 ],
@@ -216,7 +332,7 @@ Future<void> _showBranchEditor(
               ),
               const SizedBox(height: 8),
               const Text(
-                'Note: Allow check-in from any branch is a USER flag (allowAnyBranch), not a branch setting.',
+                'Note: allowing check-in from any branch is a USER setting (allowAnyBranch).',
                 style: TextStyle(fontSize: 12),
               ),
             ],
@@ -237,7 +353,7 @@ Future<void> _showBranchEditor(
   );
 }
 
-/* -------------------------------- Shifts Tab -------------------------------- */
+/* ================================ Shifts ================================ */
 
 class _ShiftsTab extends StatelessWidget {
   const _ShiftsTab();
@@ -248,12 +364,13 @@ class _ShiftsTab extends StatelessWidget {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: ref.snapshots(),
       builder: (context, snap) {
-        if (snap.hasError) return _ErrorBox(error: snap.error.toString());
+        if (snap.hasError) return _ErrorBox('Error: ${snap.error}');
         if (snap.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator());
         }
         final docs = snap.data?.docs ?? [];
         if (docs.isEmpty) return const Center(child: Text('No shifts yet'));
+
         return ListView.separated(
           padding: const EdgeInsets.fromLTRB(12, 12, 12, 96),
           itemCount: docs.length,
@@ -262,15 +379,27 @@ class _ShiftsTab extends StatelessWidget {
             final d = docs[i];
             final m = d.data();
             final name = (m['name'] ?? d.id).toString();
-            final start = (m['start'] ?? '').toString(); // HH:mm
-            final end = (m['end'] ?? '').toString();     // HH:mm
+            final start = (m['start'] ?? '').toString();
+            final end = (m['end'] ?? '').toString();
+
             return Card(
               child: ListTile(
                 leading: const Icon(Icons.access_time),
                 title: Text(name),
                 subtitle: Text('Start: $start • End: $end'),
-                trailing: const Icon(Icons.edit),
-                onTap: () => _showShiftEditor(context, docId: d.id, data: m),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _ShiftMembersCountChip(shiftId: d.id),
+                    const SizedBox(width: 6),
+                    IconButton(
+                      icon: const Icon(Icons.edit),
+                      tooltip: 'Edit',
+                      onPressed: () => _showShiftEditor(context, docId: d.id, data: m),
+                    ),
+                  ],
+                ),
+                onTap: () => _showShiftMembers(context, shiftId: d.id, shiftName: name),
               ),
             );
           },
@@ -278,6 +407,108 @@ class _ShiftsTab extends StatelessWidget {
       },
     );
   }
+}
+
+class _ShiftMembersCountChip extends StatelessWidget {
+  final String shiftId;
+  const _ShiftMembersCountChip({required this.shiftId});
+
+  @override
+  Widget build(BuildContext context) {
+    final q = FirebaseFirestore.instance
+        .collection('users')
+        .where('assignedShiftId', isEqualTo: shiftId);
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: q.snapshots(),
+      builder: (context, snap) {
+        final count = snap.data?.docs.length ?? 0;
+        return InputChip(
+          label: Text('$count'),
+          avatar: const Icon(Icons.person, size: 18),
+          onPressed: () => _showShiftMembers(context, shiftId: shiftId),
+          tooltip: 'Assigned employees',
+        );
+      },
+    );
+  }
+}
+
+Future<void> _showShiftMembers(BuildContext context,
+    {required String shiftId, String? shiftName}) async {
+  final q = FirebaseFirestore.instance
+      .collection('users')
+      .where('assignedShiftId', isEqualTo: shiftId)
+      .orderBy('fullName');
+
+  await showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    showDragHandle: true,
+    builder: (context) {
+      return Padding(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom,
+          left: 12,
+          right: 12,
+          top: 8,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.schedule),
+              title: Text(shiftName ?? 'Shift'),
+              subtitle: const Text('Assigned employees'),
+            ),
+            Flexible(
+              child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                stream: q.snapshots(),
+                builder: (context, snap) {
+                  if (snap.hasError) return _BottomError('Error: ${snap.error}');
+                  if (!snap.hasData) {
+                    return const Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Center(child: CircularProgressIndicator()),
+                    );
+                  }
+                  final users = snap.data!.docs;
+                  if (users.isEmpty) {
+                    return const Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Center(child: Text('No employees assigned')),
+                    );
+                  }
+                  return ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: users.length,
+                    separatorBuilder: (_, __) => const Divider(height: 1),
+                    itemBuilder: (context, i) {
+                      final u = users[i].data();
+                      final fullName = (u['fullName'] ?? '').toString();
+                      final username = (u['username'] ?? '').toString();
+                      final photoUrl = (u['photoUrl'] ?? '').toString();
+                      return ListTile(
+                        leading: CircleAvatar(
+                          backgroundImage: photoUrl.isNotEmpty ? NetworkImage(photoUrl) : null,
+                          child: photoUrl.isEmpty
+                              ? Text((fullName.isNotEmpty ? fullName[0] : username.isNotEmpty ? username[0] : 'U')
+                                  .toUpperCase())
+                              : null,
+                        ),
+                        title: Text(fullName.isNotEmpty ? fullName : username),
+                        subtitle: Text(users[i].id),
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
+        ),
+      );
+    },
+  );
 }
 
 Future<void> _showShiftEditor(
@@ -308,27 +539,25 @@ Future<void> _showShiftEditor(
         } else {
           await col.doc(docId).set(payload, SetOptions(merge: true));
         }
-        // ignore: use_build_context_synchronously
-        Navigator.pop(context);
+        if (context.mounted) Navigator.pop(context);
       }
 
       Future<void> onDelete() async {
         if (docId == null) return;
         final ok = await showDialog<bool>(
           context: context,
-          builder: (_) => AlertDialog(
+          builder: (ctx) => AlertDialog(
             title: const Text('Delete shift?'),
             content: const Text('This action cannot be undone.'),
             actions: [
-              TextButton(onPressed: () => Navigator.pop(_, false), child: const Text('Cancel')),
-              FilledButton.tonal(onPressed: () => Navigator.pop(_, true), child: const Text('Delete')),
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+              FilledButton.tonal(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete')),
             ],
           ),
         );
         if (ok == true) {
           await FirebaseFirestore.instance.collection('shifts').doc(docId).delete();
-          // ignore: use_build_context_synchronously
-          Navigator.pop(context);
+          if (context.mounted) Navigator.pop(context);
         }
       }
 
@@ -369,11 +598,12 @@ Future<void> _showShiftEditor(
   );
 }
 
-/* -------------------------------- Utilities -------------------------------- */
+/* ============================== Utilities =============================== */
 
 class _ErrorBox extends StatelessWidget {
-  final String error;
-  const _ErrorBox({required this.error});
+  final String message;
+  const _ErrorBox(this.message);
+
   @override
   Widget build(BuildContext context) {
     return Padding(
@@ -382,9 +612,22 @@ class _ErrorBox extends StatelessWidget {
         color: Theme.of(context).colorScheme.errorContainer,
         child: Padding(
           padding: const EdgeInsets.all(16),
-          child: Text(error),
+          child: Text(message),
         ),
       ),
+    );
+  }
+}
+
+class _BottomError extends StatelessWidget {
+  final String message;
+  const _BottomError(this.message);
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Text(message),
     );
   }
 }
