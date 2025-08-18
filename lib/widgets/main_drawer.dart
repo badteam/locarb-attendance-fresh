@@ -8,7 +8,7 @@ import '../screens/admin_users_screen.dart';
 import '../screens/branches_shifts_screen.dart';
 
 class MainDrawer extends StatefulWidget {
-  /// مرّر كولباك يغيّر الثيم على مستوى التطبيق (اختياري)
+  /// مرّر كولباك لتبديل الثيم (اختياري). مثال: (isDark) => ThemeController.setDark(isDark)
   final void Function(bool isDark)? onToggleTheme;
 
   const MainDrawer({super.key, this.onToggleTheme});
@@ -23,23 +23,21 @@ class _MainDrawerState extends State<MainDrawer> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    // خُد الحالة الحالية من الثيم
-    final isDarkNow = Theme.of(context).brightness == Brightness.dark;
-    _dark = isDarkNow;
+    _dark = Theme.of(context).brightness == Brightness.dark;
   }
 
-  void _open(BuildContext context, Widget screen) {
+  void _open(Widget screen) {
     Navigator.of(context).pop(); // اغلاق الدروار
     Navigator.of(context).push(MaterialPageRoute(builder: (_) => screen));
   }
 
-  Widget _sectionTitle(String title) {
+  Widget _section(String title) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
       child: Text(
         title.toUpperCase(),
         style: Theme.of(context).textTheme.labelSmall?.copyWith(
-              letterSpacing: 1.0,
+              letterSpacing: 1,
               color: Theme.of(context).hintColor,
             ),
       ),
@@ -49,77 +47,65 @@ class _MainDrawerState extends State<MainDrawer> {
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
-    final displayName = user?.displayName ?? '';
-    final email = user?.email ?? '';
-    final photoUrl = user?.photoURL;
+    final name = user?.displayName ?? 'LoCarb User';
+    final email = user?.email ?? '—';
+    final photo = user?.photoURL;
 
     return Drawer(
       child: SafeArea(
         child: Column(
           children: [
-            // ---- Profile Header ----
+            // Header (Profile)
             UserAccountsDrawerHeader(
               margin: EdgeInsets.zero,
               decoration: BoxDecoration(
                 color: Theme.of(context).colorScheme.primaryContainer,
               ),
               currentAccountPicture: CircleAvatar(
-                backgroundImage: (photoUrl != null && photoUrl.isNotEmpty)
-                    ? NetworkImage(photoUrl)
-                    : null,
-                child: (photoUrl == null || photoUrl.isEmpty)
-                    ? Text(
-                        (displayName.isNotEmpty
-                                ? displayName[0]
-                                : (email.isNotEmpty ? email[0] : 'U'))
-                            .toUpperCase(),
-                        style: const TextStyle(fontSize: 24),
-                      )
+                backgroundImage: (photo != null && photo.isNotEmpty) ? NetworkImage(photo) : null,
+                child: (photo == null || photo.isEmpty)
+                    ? Text((name.isNotEmpty ? name[0] : 'U').toUpperCase(), style: const TextStyle(fontSize: 22))
                     : null,
               ),
-              accountName: Text(
-                displayName.isNotEmpty ? displayName : 'LoCarb User',
-                style: const TextStyle(fontWeight: FontWeight.w600),
-              ),
-              accountEmail: Text(email.isNotEmpty ? email : '—'),
+              accountName: Text(name, overflow: TextOverflow.ellipsis),
+              accountEmail: Text(email, overflow: TextOverflow.ellipsis),
             ),
 
-            // ---- Body (scrollable) ----
+            // Body
             Expanded(
               child: ListView(
                 padding: EdgeInsets.zero,
                 children: [
-                  _sectionTitle('Overview'),
+                  _section('Overview'),
                   ListTile(
                     leading: const Icon(Icons.dashboard_outlined),
                     title: const Text('Dashboard'),
-                    subtitle: const Text('Main overview'),
-                    onTap: () => _open(context, const DashboardScreen()),
+                    onTap: () => _open(const DashboardScreen()),
                   ),
 
-                  _sectionTitle('Reports'),
+                  _section('Reports'),
                   ListTile(
                     leading: const Icon(Icons.insert_chart_outlined),
                     title: const Text('Attendance Reports'),
                     subtitle: const Text('Filter & export'),
-                    onTap: () => _open(context, const AttendanceReportScreen()),
+                    onTap: () => _open(const AttendanceReportScreen()),
                   ),
 
-                  _sectionTitle('Management'),
+                  _section('Management'),
                   ListTile(
                     leading: const Icon(Icons.people_alt_outlined),
                     title: const Text('Users'),
                     subtitle: const Text('Approvals & roles'),
-                    onTap: () => _open(context, const AdminUsersScreen()),
+                    onTap: () => _open(const AdminUsersScreen()),
                   ),
                   ListTile(
                     leading: const Icon(Icons.storefront),
                     title: const Text('Branches & Shifts'),
                     subtitle: const Text('Locations, geofence & shifts'),
-                    onTap: () => _open(context, const BranchesShiftsScreen()),
+                    onTap: () => _open(const BranchesShiftsScreen()),
                   ),
 
-                  _sectionTitle('Settings'),
+                  _section('Settings'),
                   SwitchListTile(
                     secondary: const Icon(Icons.dark_mode_outlined),
                     title: const Text('Dark Mode'),
@@ -131,8 +117,7 @@ class _MainDrawerState extends State<MainDrawer> {
                       } else {
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(
-                            content: Text(
-                                'Theme toggle needs wiring in MaterialApp (onToggleTheme not provided).'),
+                            content: Text('Wire onToggleTheme in MaterialApp to apply theme.'),
                           ),
                         );
                       }
@@ -141,12 +126,9 @@ class _MainDrawerState extends State<MainDrawer> {
                   ListTile(
                     leading: const Icon(Icons.help_outline),
                     title: const Text('Support'),
-                    subtitle: const Text('FAQs & contact'),
                     onTap: () {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Support screen coming soon.'),
-                        ),
+                        const SnackBar(content: Text('Support screen coming soon.')),
                       );
                     },
                   ),
@@ -155,7 +137,7 @@ class _MainDrawerState extends State<MainDrawer> {
             ),
 
             const Divider(height: 1),
-            // ---- Footer actions ----
+            // Footer
             ListTile(
               leading: const Icon(Icons.logout, color: Colors.red),
               title: const Text('Logout'),
@@ -165,9 +147,8 @@ class _MainDrawerState extends State<MainDrawer> {
                   if (mounted) Navigator.of(context).pop();
                 } catch (e) {
                   if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Logout failed: $e')),
-                    );
+                    ScaffoldMessenger.of(context)
+                        .showSnackBar(SnackBar(content: Text('Logout failed: $e')));
                   }
                 }
               },
