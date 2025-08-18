@@ -373,8 +373,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
     final br = branchFilterId == 'all' ? 'ALL' : branchFilterId;
     final sh = shiftFilterId == 'all' ? 'ALL' : shiftFilterId;
     final fileName =
-        'users_${_statusTab}_role-$roleFilter_branch-$br_shift-$sh_${dt.year}-${dt.month.toString().padLeft(2,'0')}-${dt.day.toString().padLeft(2,'0')}.csv';
-
+        'users_${_statusTab}_role-$roleFilter_branch-$branchFilterId_shift-$shiftFilterId_${dt.year}-${dt.month.toString().padLeft(2,'0')}-${dt.day.toString().padLeft(2,'0')}.csv';
     final anchor = html.AnchorElement(href: url)
       ..setAttribute('download', fileName)
       ..click();
