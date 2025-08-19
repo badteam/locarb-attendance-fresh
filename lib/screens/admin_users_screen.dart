@@ -307,84 +307,83 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
     );
   }
 
-  Future<void> _exportCsvWithFilters({
-    required Query<Map<String, dynamic>> usersQ,
-    required String roleFilter,
-    required String branchFilterId,
-    required String shiftFilterId,
-  }) async {
-    // Snapshot واحد حسب حالة التبويب + نطبق الفلاتر في الذاكرة
-    final snap = await usersQ.get();
-    var users = snap.docs;
+ Future<void> _exportCsvWithFilters({
+  required Query<Map<String, dynamic>> usersQ,
+  required String roleFilter,
+  required String branchFilterId,
+  required String shiftFilterId,
+}) async {
+  // Snapshot حسب حالة التبويب، وبعدها نطبّق الفلاتر في الذاكرة
+  final snap = await usersQ.get();
+  var users = snap.docs;
 
-    users = users.where((u) {
-      final m = u.data();
-      final role     = (m['role'] ?? 'employee').toString();
-      final branchId = (m['primaryBranchId'] ?? '').toString();
-      final shiftId  = (m['assignedShiftId'] ?? '').toString();
+  users = users.where((u) {
+    final m = u.data();
+    final role     = (m['role'] ?? 'employee').toString();
+    final branchId = (m['primaryBranchId'] ?? '').toString();
+    final shiftId  = (m['assignedShiftId'] ?? '').toString();
 
-      final roleOk   = roleFilter == 'all' || role == roleFilter;
-      final branchOk = branchFilterId == 'all' || branchId == branchFilterId;
-      final shiftOk  = shiftFilterId == 'all' || shiftId == shiftFilterId;
+    final roleOk   = roleFilter == 'all' || role == roleFilter;
+    final branchOk = branchFilterId == 'all' || branchId == branchFilterId;
+    final shiftOk  = shiftFilterId == 'all' || shiftId == shiftFilterId;
 
-      return roleOk && branchOk && shiftOk;
-    }).toList();
+    return roleOk && branchOk && shiftOk;
+  }).toList();
 
-    // تجهيز CSV
-    final rows = <List<String>>[];
+  // جهّز CSV
+  final rows = <List<String>>[];
+  rows.add([
+    'UID',
+    'Full Name',
+    'Email',
+    'Role',
+    'Status',
+    'Branch Name',
+    'Branch ID',
+    'Shift Name',
+    'Shift ID',
+    'Created At',
+    'Updated At',
+  ]);
+
+  for (final u in users) {
+    final m = u.data();
     rows.add([
-      'UID',
-      'Full Name',
-      'Email',
-      'Role',
-      'Status',
-      'Branch Name',
-      'Branch ID',
-      'Shift Name',
-      'Shift ID',
-      'Created At',
-      'Updated At',
+      u.id,
+      (m['fullName'] ?? m['username'] ?? '').toString(),
+      (m['email'] ?? '').toString(),
+      (m['role'] ?? 'employee').toString(),
+      (m['status'] ?? 'pending').toString(),
+      (m['branchName'] ?? '').toString(),
+      (m['primaryBranchId'] ?? '').toString(),
+      (m['shiftName'] ?? '').toString(),
+      (m['assignedShiftId'] ?? '').toString(),
+      (m['createdAt'] is Timestamp) ? (m['createdAt'] as Timestamp).toDate().toIso8601String() : '',
+      (m['updatedAt'] is Timestamp) ? (m['updatedAt'] as Timestamp).toDate().toIso8601String() : '',
     ]);
-
-    for (final u in users) {
-      final m = u.data();
-      rows.add([
-        u.id,
-        (m['fullName'] ?? m['username'] ?? '').toString(),
-        (m['email'] ?? '').toString(),
-        (m['role'] ?? 'employee').toString(),
-        (m['status'] ?? 'pending').toString(),
-        (m['branchName'] ?? '').toString(),
-        (m['primaryBranchId'] ?? '').toString(),
-        (m['shiftName'] ?? '').toString(),
-        (m['assignedShiftId'] ?? '').toString(),
-        (m['createdAt'] is Timestamp) ? (m['createdAt'] as Timestamp).toDate().toIso8601String() : '',
-        (m['updatedAt'] is Timestamp) ? (m['updatedAt'] as Timestamp).toDate().toIso8601String() : '',
-      ]);
-    }
-
-    // إلى CSV (Excel-compatible)
-    final csv = const ListToCsvConverter().convert(rows);
-    final bytes = utf8.encode(csv);
-    final blob = html.Blob([bytes], 'text/csv;charset=utf-8;');
-    final url = html.Url.createObjectUrlFromBlob(blob);
-
-    final dt = DateTime.now();
-    final br = branchFilterId == 'all' ? 'ALL' : branchFilterId;
-    final sh = shiftFilterId == 'all' ? 'ALL' : shiftFilterId;
-
-    // ✅ هنا كانت المشكلة: استخدم أسماء المتغيرات الصحيحة
-    final fileName =
-        'users_${_statusTab}_role-$roleFilter_branch-$branchFilterId_shift-$shiftFilterId_${dt.year}-${dt.month.toString().padLeft(2,'0')}-${dt.day.toString().padLeft(2,'0')}.csv';
-    
-    
-    final anchor = html.AnchorElement(href: url)
-      ..setAttribute('download', fileName)
-      ..click();
-
-    html.Url.revokeObjectUrl(url);
   }
+
+  // حوّل إلى CSV وأنزّل الملف
+  final csv = const ListToCsvConverter().convert(rows);
+  final bytes = utf8.encode(csv);
+  final blob = html.Blob([bytes], 'text/csv;charset=utf-8;');
+  final url = html.Url.createObjectUrlFromBlob(blob);
+
+  final dt = DateTime.now();
+  final br = branchFilterId == 'all' ? 'ALL' : branchFilterId;
+  final sh = shiftFilterId == 'all' ? 'ALL' : shiftFilterId;
+
+  // ✅ اسم الملف الصحيح — لاحظ استخدام المتغيرات roleFilter / br / sh
+  final fileName =
+      'users_${_statusTab}_role-$roleFilter_branch-$br_shift-$sh_${dt.year}-${dt.month.toString().padLeft(2,"0")}-${dt.day.toString().padLeft(2,"0")}.csv';
+
+  final anchor = html.AnchorElement(href: url)
+    ..setAttribute('download', fileName)
+    ..click();
+
+  html.Url.revokeObjectUrl(url);
 }
+
 
 /* -------------------------- User Card (compact) -------------------------- */
 
