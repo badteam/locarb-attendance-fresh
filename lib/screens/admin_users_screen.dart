@@ -1,19 +1,39 @@
 // lib/screens/admin_users_screen.dart
 import 'dart:async';
 import 'dart:convert';
-import 'dart:html' as html; // يُستخدم للتحميل على الويب فقط
+import 'dart:html' as html; // للويب
 import 'package:csv/csv.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-/// أدوار النظام (لا نغيّر في الداتابيز: نقرأ الموجود فقط)
+/* -------------------------------------------------------------------------- */
+/*                                  ROLES                                     */
+/* -------------------------------------------------------------------------- */
+
 const List<String> kRoles = [
   'employee',
   'supervisor',
   'branch_manager',
   'admin',
 ];
+
+String roleLabel(String r) {
+  switch (r) {
+    case 'admin':
+      return 'Admin';
+    case 'supervisor':
+      return 'Supervisor';
+    case 'branch_manager':
+      return 'Branch manager';
+    default:
+      return 'Employee';
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*                             ADMIN USERS SCREEN                              */
+/* -------------------------------------------------------------------------- */
 
 class AdminUsersScreen extends StatefulWidget {
   const AdminUsersScreen({super.key});
@@ -22,8 +42,7 @@ class AdminUsersScreen extends StatefulWidget {
   State<AdminUsersScreen> createState() => _AdminUsersScreenState();
 }
 
-class _AdminUsersScreenState extends State<AdminUsersScreen>
-    with SingleTickerProviderStateMixin {
+class _AdminUsersScreenState extends State<AdminUsersScreen> {
   // تبويب الحالة
   String _statusTab = 'approved'; // or 'pending'
 
@@ -33,30 +52,9 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
   String _branchFilterId = 'all';
   String _shiftFilterId = 'all';
 
-  // بيانات الفروع/الشفتات (id=>name) لعرض القوائم فقط
+  // قوائم أسماء الفروع/الشفتات للعرض
   final Map<String, String> _branchNames = {'all': 'All branches'};
   final Map<String, String> _shiftNames = {'all': 'All shifts'};
-
-  // تحميل الفروع والشفتات مرة واحدة
-  Future<void> _loadRefs() async {
-    // branches
-    try {
-      final br = await FirebaseFirestore.instance.collection('branches').get();
-      for (final d in br.docs) {
-        final name = (d['name'] ?? d.id).toString();
-        _branchNames[d.id] = name;
-      }
-    } catch (_) {}
-    // shifts
-    try {
-      final sh = await FirebaseFirestore.instance.collection('shifts').get();
-      for (final d in sh.docs) {
-        final name = (d['name'] ?? d.id).toString();
-        _shiftNames[d.id] = name;
-      }
-    } catch (_) {}
-    if (mounted) setState(() {});
-  }
 
   @override
   void initState() {
@@ -70,16 +68,32 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
     super.dispose();
   }
 
-  /// استعلام المستخدمين الأساسي حسب الحالة
+  Future<void> _loadRefs() async {
+    try {
+      final br = await FirebaseFirestore.instance.collection('branches').get();
+      for (final d in br.docs) {
+        final name = (d['name'] ?? d.id).toString();
+        _branchNames[d.id] = name;
+      }
+    } catch (_) {}
+    try {
+      final sh = await FirebaseFirestore.instance.collection('shifts').get();
+      for (final d in sh.docs) {
+        final name = (d['name'] ?? d.id).toString();
+        _shiftNames[d.id] = name;
+      }
+    } catch (_) {}
+    if (mounted) setState(() {});
+  }
+
   Query<Map<String, dynamic>> _buildUsersQuery() {
-    var q = FirebaseFirestore.instance.collection('users')
-      .where('status', isEqualTo: _statusTab);
-    // ترتيب اختياري
-    q = q.orderBy('fullName', descending: false);
+    var q = FirebaseFirestore.instance
+        .collection('users')
+        .where('status', isEqualTo: _statusTab)
+        .orderBy('fullName', descending: false);
     return q;
   }
 
-  /// تغيير الحالة Pending/Approved
   Future<void> _setStatus(String uid, String status) async {
     await FirebaseFirestore.instance.doc('users/$uid').set(
       {'status': status, 'updatedAt': FieldValue.serverTimestamp()},
@@ -87,7 +101,6 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
     );
   }
 
-  /// تغيير الدور
   Future<void> _setRole(String uid, String role) async {
     await FirebaseFirestore.instance.doc('users/$uid').set(
       {'role': role, 'updatedAt': FieldValue.serverTimestamp()},
@@ -95,13 +108,19 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
     );
   }
 
-  /// تصدير CSV شهري – لا يغير أي schema
-  Future<void> _exportCsvMonthly({
-    DateTime? monthStart,
-  }) async {
-    final usersQuery = _buildUsersQuery();
+  Future<void> _openPayrollDialog(String uid, Map<String, dynamic> userData) async {
+    await showDialog(
+      context: context,
+      builder: (ctx) => PayrollDialog(
+        uid: uid,
+        userData: userData,
+      ),
+    );
+  }
+
+  Future<void> _exportCsvMonthly({DateTime? monthStart}) async {
     await exportUsersCsvMonthlyCompat(
-      usersQuery: usersQuery,
+      usersQuery: _buildUsersQuery(),
       roleFilter: _roleFilter,
       branchFilterId: _branchFilterId,
       shiftFilterId: _shiftFilterId,
@@ -113,7 +132,6 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
     );
   }
 
-  // واجهة
   @override
   Widget build(BuildContext context) {
     final branches = _branchNames.entries.toList()
@@ -125,7 +143,6 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
       appBar: AppBar(
         title: const Text('Users'),
         actions: [
-          // سوئتش بين Pending/Approved
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8),
             child: SegmentedButton<String>(
@@ -143,7 +160,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
       ),
       body: Column(
         children: [
-          // شريط الفلاتر
+          // فلاتر
           Padding(
             padding: const EdgeInsets.all(12),
             child: Wrap(
@@ -151,7 +168,6 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
               spacing: 12,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                // بحث
                 ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 360),
                   child: TextField(
@@ -167,8 +183,6 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
                     onChanged: (_) => setState(() {}),
                   ),
                 ),
-
-                // Role
                 _FilterBox(
                   label: 'Role',
                   child: DropdownButton<String>(
@@ -183,8 +197,6 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
                     onChanged: (v) => setState(() => _roleFilter = v ?? 'all'),
                   ),
                 ),
-
-                // Branch
                 _FilterBox(
                   label: 'Branch',
                   child: DropdownButton<String>(
@@ -198,8 +210,6 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
                     onChanged: (v) => setState(() => _branchFilterId = v ?? 'all'),
                   ),
                 ),
-
-                // Shift
                 _FilterBox(
                   label: 'Shift',
                   child: DropdownButton<String>(
@@ -213,8 +223,6 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
                     onChanged: (v) => setState(() => _shiftFilterId = v ?? 'all'),
                   ),
                 ),
-
-                // Export
                 FilledButton.icon(
                   onPressed: () => _exportCsvMonthly(),
                   icon: const Icon(Icons.download),
@@ -225,7 +233,6 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
           ),
           const Divider(height: 0),
 
-          // قائمة المستخدمين
           Expanded(
             child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
               stream: _buildUsersQuery().snapshots(),
@@ -237,7 +244,6 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
                   return const Center(child: Text('No data'));
                 }
 
-                // فلترة في الذاكرة حسب الفلاتر والبحث
                 final q = _searchCtrl.text.trim().toLowerCase();
                 final docs = snap.data!.docs.where((d) {
                   final m = d.data();
@@ -250,13 +256,13 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
                   final brOk = _branchFilterId == 'all' || brId == _branchFilterId;
                   final shOk = _shiftFilterId == 'all' || shId == _shiftFilterId;
 
-                  final matchesSearch = q.isEmpty
+                  final matches = q.isEmpty
                       ? true
                       : ((m['fullName'] ?? '').toString().toLowerCase().contains(q) ||
                           (m['email'] ?? '').toString().toLowerCase().contains(q) ||
                           (m['username'] ?? '').toString().toLowerCase().contains(q));
 
-                  return roleOk && brOk && shOk && matchesSearch;
+                  return roleOk && brOk && shOk && matches;
                 }).toList();
 
                 if (docs.isEmpty) {
@@ -292,7 +298,6 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            // السطر العلوي: الاسم + الإيميل + شارات
                             Row(
                               children: [
                                 CircleAvatar(
@@ -303,24 +308,27 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
                                   child: Column(
                                     crossAxisAlignment: CrossAxisAlignment.start,
                                     children: [
-                                      Text(name,
-                                          style: Theme.of(context).textTheme.titleMedium),
+                                      Text(name, style: Theme.of(context).textTheme.titleMedium),
                                       if (email.isNotEmpty)
-                                        Text(email,
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .bodySmall
-                                                ?.copyWith(color: Colors.grey)),
+                                        Text(email, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey)),
                                     ],
                                   ),
                                 ),
-                                // حالة المستخدم
-                                _StatusChip(status: status),
+                                Chip(
+                                  avatar: Icon(
+                                    status == 'approved' ? Icons.verified : Icons.hourglass_bottom,
+                                    size: 18,
+                                    color: status == 'approved' ? Colors.green : Colors.orange,
+                                  ),
+                                  label: Text(status),
+                                  backgroundColor: status == 'approved'
+                                      ? Colors.green.withOpacity(.12)
+                                      : Colors.orange.withOpacity(.12),
+                                  side: BorderSide.none,
+                                ),
                               ],
                             ),
                             const SizedBox(height: 10),
-
-                            // معلومات الفرع والشفت
                             Wrap(
                               spacing: 8,
                               runSpacing: 8,
@@ -330,28 +338,22 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
                               ],
                             ),
                             const SizedBox(height: 10),
-
-                            // أكشنز: تغيير الحالة + الدور
                             Row(
                               children: [
                                 OutlinedButton(
                                   onPressed: () {
-                                    final next =
-                                        status == 'approved' ? 'pending' : 'approved';
+                                    final next = status == 'approved' ? 'pending' : 'approved';
                                     _setStatus(u.id, next);
                                   },
-                                  child: Text(status == 'approved'
-                                      ? 'Mark Pending'
-                                      : 'Approve'),
+                                  child: Text(status == 'approved' ? 'Mark Pending' : 'Approve'),
                                 ),
                                 const SizedBox(width: 12),
-                                // اختيار الدور
                                 DropdownButton<String>(
                                   value: kRoles.contains(role) ? role : 'employee',
                                   items: kRoles
                                       .map((r) => DropdownMenuItem(
                                             value: r,
-                                            child: Text(_roleLabel(r)),
+                                            child: Text(roleLabel(r)),
                                           ))
                                       .toList(),
                                   onChanged: (v) {
@@ -359,17 +361,10 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
                                   },
                                 ),
                                 const Spacer(),
-                                // زر راتب (اختياري – مجرد placeholder)
-                                OutlinedButton(
-                                  onPressed: () {
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(
-                                        content: Text(
-                                            'Payroll dialog is not implemented here – محفوظ كما هو.'),
-                                      ),
-                                    );
-                                  },
-                                  child: const Text('Edit Payroll'),
+                                OutlinedButton.icon(
+                                  onPressed: () => _openPayrollDialog(u.id, m),
+                                  icon: const Icon(Icons.payments),
+                                  label: const Text('Edit Payroll'),
                                 ),
                               ],
                             ),
@@ -386,22 +381,8 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
       ),
     );
   }
-
-  String _roleLabel(String r) {
-    switch (r) {
-      case 'admin':
-        return 'Admin';
-      case 'supervisor':
-        return 'Supervisor';
-      case 'branch_manager':
-        return 'Branch manager';
-      default:
-        return 'Employee';
-    }
-  }
 }
 
-/// صندوق فلتر صغير
 class _FilterBox extends StatelessWidget {
   final String label;
   final Widget child;
@@ -412,9 +393,7 @@ class _FilterBox extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label,
-            style:
-                Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey)),
+        Text(label, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey)),
         const SizedBox(height: 4),
         DecoratedBox(
           decoration: BoxDecoration(
@@ -431,25 +410,6 @@ class _FilterBox extends StatelessWidget {
   }
 }
 
-/// شارة الحالة
-class _StatusChip extends StatelessWidget {
-  final String status;
-  const _StatusChip({required this.status});
-
-  @override
-  Widget build(BuildContext context) {
-    final ok = status == 'approved';
-    return Chip(
-      avatar: Icon(ok ? Icons.verified : Icons.hourglass_bottom,
-          size: 18, color: ok ? Colors.green : Colors.orange),
-      label: Text(status),
-      backgroundColor: ok ? Colors.green.withOpacity(.12) : Colors.orange.withOpacity(.12),
-      side: BorderSide.none,
-    );
-  }
-}
-
-/// شارة معلومات
 class _InfoChip extends StatelessWidget {
   final IconData icon;
   final String label;
@@ -466,7 +426,229 @@ class _InfoChip extends StatelessWidget {
 }
 
 /* -------------------------------------------------------------------------- */
-/* -------------------  CSV Export (متوافق مع الموجود)  ---------------------- */
+/*                                PAYROLL DIALOG                              */
+/* -------------------------------------------------------------------------- */
+
+class PayrollDialog extends StatefulWidget {
+  final String uid;
+  final Map<String, dynamic> userData;
+  const PayrollDialog({super.key, required this.uid, required this.userData});
+
+  @override
+  State<PayrollDialog> createState() => _PayrollDialogState();
+}
+
+class _PayrollDialogState extends State<PayrollDialog> {
+  late final TextEditingController _baseSalaryCtrl;
+  String _trxType = 'bonus'; // bonus | allowance | deduction
+  final TextEditingController _amountCtrl = TextEditingController();
+  DateTime _trxDate = DateTime.now();
+
+  @override
+  void initState() {
+    super.initState();
+    final base = (widget.userData['baseSalary'] ?? 0).toString();
+    _baseSalaryCtrl = TextEditingController(text: base);
+  }
+
+  @override
+  void dispose() {
+    _baseSalaryCtrl.dispose();
+    _amountCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _saveBaseSalary() async {
+    final v = double.tryParse(_baseSalaryCtrl.text.trim()) ?? 0.0;
+    await FirebaseFirestore.instance.doc('users/${widget.uid}').set(
+      {
+        'baseSalary': v,
+        'updatedAt': FieldValue.serverTimestamp(),
+      },
+      SetOptions(merge: true),
+    );
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Base salary saved')));
+      setState(() {});
+    }
+  }
+
+  Future<void> _addTransaction() async {
+    final amt = double.tryParse(_amountCtrl.text.trim()) ?? 0.0;
+    if (amt == 0) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Amount must be non-zero')));
+      return;
+    }
+    await FirebaseFirestore.instance
+        .collection('users')
+        .doc(widget.uid)
+        .collection('payroll')
+        .add({
+      'type': _trxType, // bonus | allowance | deduction
+      'amount': amt,
+      'date': Timestamp.fromDate(DateTime(_trxDate.year, _trxDate.month, _trxDate.day)),
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+    _amountCtrl.clear();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Transaction added')));
+      setState(() {});
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // آخر 12 حركة للعرض السريع
+    final trxStream = FirebaseFirestore.instance
+        .collection('users')
+        .doc(widget.uid)
+        .collection('payroll')
+        .orderBy('date', descending: true)
+        .limit(12)
+        .snapshots();
+
+    return AlertDialog(
+      title: const Text('Payroll'),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 520),
+        child: SingleChildScrollView(
+          child: Column(
+            children: [
+              // الراتب الأساسي
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _baseSalaryCtrl,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(
+                        labelText: 'Base salary',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    onPressed: _saveBaseSalary,
+                    child: const Text('Save'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+
+              // إضافة حركة
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text('Add transaction', style: Theme.of(context).textTheme.titleMedium),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  DropdownButton<String>(
+                    value: _trxType,
+                    items: const [
+                      DropdownMenuItem(value: 'bonus', child: Text('Bonus')),
+                      DropdownMenuItem(value: 'allowance', child: Text('Allowance')),
+                      DropdownMenuItem(value: 'deduction', child: Text('Deduction')),
+                    ],
+                    onChanged: (v) => setState(() => _trxType = v ?? 'bonus'),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextField(
+                      controller: _amountCtrl,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(
+                        labelText: 'Amount',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  OutlinedButton(
+                    onPressed: () async {
+                      final picked = await showDatePicker(
+                        context: context,
+                        initialDate: _trxDate,
+                        firstDate: DateTime(2020, 1, 1),
+                        lastDate: DateTime(2100, 12, 31),
+                      );
+                      if (picked != null) setState(() => _trxDate = picked);
+                    },
+                    child: Text('${_trxDate.year}-${_trxDate.month.toString().padLeft(2, '0')}-${_trxDate.day.toString().padLeft(2, '0')}'),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton.icon(
+                    onPressed: _addTransaction,
+                    icon: const Icon(Icons.add),
+                    label: const Text('Add'),
+                  ),
+                ],
+              ),
+
+              const SizedBox(height: 16),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text('Recent transactions', style: Theme.of(context).textTheme.titleMedium),
+              ),
+              const SizedBox(height: 8),
+
+              // جدول آخر الحركات
+              StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                stream: trxStream,
+                builder: (context, snap) {
+                  if (snap.connectionState == ConnectionState.waiting) {
+                    return const Padding(
+                      padding: EdgeInsets.all(16),
+                      child: LinearProgressIndicator(),
+                    );
+                  }
+                  final docs = snap.data?.docs ?? [];
+                  if (docs.isEmpty) {
+                    return const Padding(
+                      padding: EdgeInsets.all(8),
+                      child: Text('No transactions'),
+                    );
+                  }
+                  return Column(
+                    children: docs.map((d) {
+                      final m = d.data();
+                      final t = (m['type'] ?? '').toString();
+                      final a = (m['amount'] ?? 0).toDouble();
+                      final dt = (m['date'] is Timestamp)
+                          ? (m['date'] as Timestamp).toDate()
+                          : DateTime.now();
+                      return ListTile(
+                        dense: true,
+                        title: Text('$t  •  ${a.toStringAsFixed(2)}'),
+                        subtitle: Text('${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}'),
+                        trailing: IconButton(
+                          tooltip: 'Delete',
+                          icon: const Icon(Icons.delete_outline),
+                          onPressed: () async {
+                            await d.reference.delete();
+                          },
+                        ),
+                      );
+                    }).toList(),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+      ],
+    );
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*                          CSV EXPORT (COMPATIBLE)                           */
 /* -------------------------------------------------------------------------- */
 
 Future<void> exportUsersCsvMonthlyCompat({
@@ -480,17 +662,13 @@ Future<void> exportUsersCsvMonthlyCompat({
   required Map<String, String> shiftNames,
   DateTime? monthStart,
 }) async {
-  // نطاق الشهر
   final now = DateTime.now();
   final start = monthStart ?? DateTime(now.year, now.month, 1);
-  final end = DateTime(start.year, start.month + 1, 1)
-      .subtract(const Duration(microseconds: 1));
+  final end = DateTime(start.year, start.month + 1, 1).subtract(const Duration(microseconds: 1));
 
-  // اجلب المستخدمين
   final snap = await usersQuery.get();
   var users = snap.docs;
 
-  // فلترة في الذاكرة (لا تغيّر الداتابيز)
   final q = searchText.trim().toLowerCase();
   users = users.where((u) {
     final m = u.data();
@@ -511,7 +689,6 @@ Future<void> exportUsersCsvMonthlyCompat({
     return roleOk && brOk && shOk && matches;
   }).toList();
 
-  // رؤوس CSV — UID في آخر عمود
   final rows = <List<String>>[
     [
       'Name',
@@ -546,11 +723,29 @@ Future<void> exportUsersCsvMonthlyCompat({
     final brNm  = (m['branchName'] ?? (branchNames[brId] ?? (brId.isEmpty ? 'No branch' : brId))).toString();
     final shNm  = (m['shiftName']  ?? (shiftNames[shId]  ?? (shId.isEmpty ? 'No shift'  : shId ))).toString();
 
-    final baseSalary = (m['baseSalary'] ?? 0).toDouble();
+    // 1) راتب أساسي من مستند المستخدم
+    double baseSalary = 0;
+    final _base = m['baseSalary'];
+    if (_base is num) baseSalary = _base.toDouble();
+    if (_base is String) baseSalary = double.tryParse(_base) ?? 0.0;
 
-    // نجمع معاملات الشهر (اختياري)
-    double bonuses = 0;
-    double deductions = 0;
+    // 2) مجاميع مباشرة محفوظة في مستند المستخدم (لو كنت مدخلها هناك)
+    double bonusesFixed = 0;
+    for (final key in ['bonus', 'bonuses', 'allowance', 'allowances']) {
+      final v = m[key];
+      if (v is num) bonusesFixed += v.toDouble();
+      if (v is String) bonusesFixed += double.tryParse(v) ?? 0.0;
+    }
+    double deductionsFixed = 0;
+    for (final key in ['deduction', 'deductions']) {
+      final v = m[key];
+      if (v is num) deductionsFixed += v.toDouble();
+      if (v is String) deductionsFixed += double.tryParse(v) ?? 0.0;
+    }
+
+    // 3) حركات شهرية من subcollection (لو موجودة)
+    double bonusesVar = 0;
+    double deductionsVar = 0;
     try {
       final trx = await FirebaseFirestore.instance
           .collection('users').doc(uid).collection('payroll')
@@ -560,17 +755,23 @@ Future<void> exportUsersCsvMonthlyCompat({
 
       for (final d in trx.docs) {
         final t = (d['type'] ?? '').toString().toLowerCase();
-        final amt = (d['amount'] ?? 0).toDouble();
+        final amountAny = d['amount'];
+        double amount = 0.0;
+        if (amountAny is num) amount = amountAny.toDouble();
+        if (amountAny is String) amount = double.tryParse(amountAny) ?? 0.0;
+
         if (t == 'bonus' || t == 'allowance') {
-          bonuses += amt;
+          bonusesVar += amount;
         } else if (t == 'deduction') {
-          deductions += amt;
+          deductionsVar += amount;
         }
       }
     } catch (_) {
-      // تجاهل لو مفيش صلاحية/كوليكشن
+      // تجاهل
     }
 
+    final bonuses = bonusesFixed + bonusesVar;
+    final deductions = deductionsFixed + deductionsVar;
     final net = (baseSalary + bonuses) - deductions;
 
     rows.add([
@@ -584,26 +785,19 @@ Future<void> exportUsersCsvMonthlyCompat({
       bonuses.toStringAsFixed(2),
       deductions.toStringAsFixed(2),
       net.toStringAsFixed(2),
-      uid,     // UID آخر عمود
+      uid,
       brId,
       shId,
       '${start.year}-${start.month.toString().padLeft(2, "0")}',
     ]);
   }
 
-  // أنشئ الملف ونزّله (ويب فقط)
-  if (!kIsWeb) {
-    // على الموبايل: ممكن ترفعه لـ Storage أو تحفظه محلي – خارج نطاقنا هنا
-    return;
-  }
+  if (!kIsWeb) return; // تصدير الويب فقط هنا
   final csv = const ListToCsvConverter().convert(rows);
   final bytes = utf8.encode(csv);
   final blob = html.Blob([bytes], 'text/csv;charset=utf-8;');
   final url = html.Url.createObjectUrlFromBlob(blob);
-
-  final fileName =
-      'users_payroll_${statusTab}_${start.year}-${start.month.toString().padLeft(2, "0")}.csv';
-
+  final fileName = 'users_payroll_${statusTab}_${start.year}-${start.month.toString().padLeft(2, "0")}.csv';
   final a = html.AnchorElement(href: url)..setAttribute('download', fileName)..click();
   html.Url.revokeObjectUrl(url);
 }
