@@ -371,8 +371,8 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
 
     final dt = DateTime.now();
     final fileName =
-        'users_${_statusTab}_role-$roleFilter_branch-$branchFilterId_shift-$shiftFilterId_${dt.year}-${dt.month.toString().padLeft(2,"0")}-${dt.day.toString().padLeft(2,"0")}.csv';
-
+       'users_${_statusTab}_role-${roleFilter}_branch-${branchFilterId}_shift-${shiftFilterId}_${dt.year}-${dt.month.toString().padLeft(2,"0")}-${dt.day.toString().padLeft(2,"0")}.csv';
+      
     final anchor = html.AnchorElement(href: url)
       ..setAttribute('download', fileName)
       ..click();
