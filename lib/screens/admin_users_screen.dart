@@ -1,15 +1,13 @@
 // lib/screens/admin_users_screen.dart
 import 'dart:async';
 import 'dart:convert';
-import 'dart:html' as html; // للويب
+import 'dart:html' as html; // للويب فقط
 import 'package:csv/csv.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-/* -------------------------------------------------------------------------- */
-/*                                  ROLES                                     */
-/* -------------------------------------------------------------------------- */
+/* =============================== ROLES =============================== */
 
 const List<String> kRoles = [
   'employee',
@@ -31,28 +29,35 @@ String roleLabel(String r) {
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/*                             ADMIN USERS SCREEN                              */
-/* -------------------------------------------------------------------------- */
+/* ========================= UTIL: Safe number ========================= */
+
+double _numLike(dynamic v) {
+  if (v == null) return 0.0;
+  if (v is num) return v.toDouble();
+  if (v is String) return double.tryParse(v.trim()) ?? 0.0;
+  return 0.0;
+}
+
+Timestamp? _tsOrNull(dynamic v) {
+  if (v is Timestamp) return v;
+  return null;
+}
+
+/* ========================== ADMIN USERS PAGE ========================= */
 
 class AdminUsersScreen extends StatefulWidget {
   const AdminUsersScreen({super.key});
-
   @override
   State<AdminUsersScreen> createState() => _AdminUsersScreenState();
 }
 
 class _AdminUsersScreenState extends State<AdminUsersScreen> {
-  // تبويب الحالة
   String _statusTab = 'approved'; // or 'pending'
-
-  // فلاتر
   final TextEditingController _searchCtrl = TextEditingController();
   String _roleFilter = 'all';
   String _branchFilterId = 'all';
   String _shiftFilterId = 'all';
 
-  // قوائم أسماء الفروع/الشفتات للعرض
   final Map<String, String> _branchNames = {'all': 'All branches'};
   final Map<String, String> _shiftNames = {'all': 'All shifts'};
 
@@ -72,15 +77,13 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
     try {
       final br = await FirebaseFirestore.instance.collection('branches').get();
       for (final d in br.docs) {
-        final name = (d['name'] ?? d.id).toString();
-        _branchNames[d.id] = name;
+        _branchNames[d.id] = (d['name'] ?? d.id).toString();
       }
     } catch (_) {}
     try {
       final sh = await FirebaseFirestore.instance.collection('shifts').get();
       for (final d in sh.docs) {
-        final name = (d['name'] ?? d.id).toString();
-        _shiftNames[d.id] = name;
+        _shiftNames[d.id] = (d['name'] ?? d.id).toString();
       }
     } catch (_) {}
     if (mounted) setState(() {});
@@ -111,10 +114,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
   Future<void> _openPayrollDialog(String uid, Map<String, dynamic> userData) async {
     await showDialog(
       context: context,
-      builder: (ctx) => PayrollDialog(
-        uid: uid,
-        userData: userData,
-      ),
+      builder: (ctx) => PayrollDialog(uid: uid, userData: userData),
     );
   }
 
@@ -160,7 +160,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
       ),
       body: Column(
         children: [
-          // فلاتر
+          // Filters
           Padding(
             padding: const EdgeInsets.all(12),
             child: Wrap(
@@ -175,9 +175,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                     decoration: InputDecoration(
                       prefixIcon: const Icon(Icons.search),
                       hintText: 'Search by name or email',
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(10),
-                      ),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
                       isDense: true,
                     ),
                     onChanged: (_) => setState(() {}),
@@ -202,10 +200,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                   child: DropdownButton<String>(
                     value: _branchFilterId,
                     items: branches
-                        .map((e) => DropdownMenuItem(
-                              value: e.key,
-                              child: Text(e.value),
-                            ))
+                        .map((e) => DropdownMenuItem(value: e.key, child: Text(e.value)))
                         .toList(),
                     onChanged: (v) => setState(() => _branchFilterId = v ?? 'all'),
                   ),
@@ -215,10 +210,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                   child: DropdownButton<String>(
                     value: _shiftFilterId,
                     items: shifts
-                        .map((e) => DropdownMenuItem(
-                              value: e.key,
-                              child: Text(e.value),
-                            ))
+                        .map((e) => DropdownMenuItem(value: e.key, child: Text(e.value)))
                         .toList(),
                     onChanged: (v) => setState(() => _shiftFilterId = v ?? 'all'),
                   ),
@@ -232,7 +224,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
             ),
           ),
           const Divider(height: 0),
-
+          // Users list
           Expanded(
             child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
               stream: _buildUsersQuery().snapshots(),
@@ -247,21 +239,17 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                 final q = _searchCtrl.text.trim().toLowerCase();
                 final docs = snap.data!.docs.where((d) {
                   final m = d.data();
-
                   final role = (m['role'] ?? 'employee').toString();
                   final brId = (m['primaryBranchId'] ?? '').toString();
                   final shId = (m['assignedShiftId'] ?? '').toString();
-
                   final roleOk = _roleFilter == 'all' || role == _roleFilter;
                   final brOk = _branchFilterId == 'all' || brId == _branchFilterId;
                   final shOk = _shiftFilterId == 'all' || shId == _shiftFilterId;
-
                   final matches = q.isEmpty
                       ? true
                       : ((m['fullName'] ?? '').toString().toLowerCase().contains(q) ||
                           (m['email'] ?? '').toString().toLowerCase().contains(q) ||
                           (m['username'] ?? '').toString().toLowerCase().contains(q));
-
                   return roleOk && brOk && shOk && matches;
                 }).toList();
 
@@ -276,20 +264,14 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                   itemBuilder: (_, i) {
                     final u = docs[i];
                     final m = u.data();
-
-                    final name =
-                        (m['fullName'] ?? m['username'] ?? m['email'] ?? '').toString();
+                    final name = (m['fullName'] ?? m['username'] ?? m['email'] ?? '').toString();
                     final email = (m['email'] ?? '').toString();
                     final role = (m['role'] ?? 'employee').toString();
                     final status = (m['status'] ?? 'pending').toString();
-
                     final brId = (m['primaryBranchId'] ?? '').toString();
                     final shId = (m['assignedShiftId'] ?? '').toString();
-
-                    final brName =
-                        (m['branchName'] ?? (_branchNames[brId] ?? (brId.isEmpty ? 'No branch' : brId))).toString();
-                    final shName =
-                        (m['shiftName'] ?? (_shiftNames[shId] ?? (shId.isEmpty ? 'No shift' : shId))).toString();
+                    final brName = (m['branchName'] ?? (_branchNames[brId] ?? (brId.isEmpty ? 'No branch' : brId))).toString();
+                    final shName = (m['shiftName'] ?? (_shiftNames[shId] ?? (shId.isEmpty ? 'No shift' : shId))).toString();
 
                     return Card(
                       elevation: 0,
@@ -300,9 +282,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                           children: [
                             Row(
                               children: [
-                                CircleAvatar(
-                                  child: Text(name.isEmpty ? '?' : name[0].toUpperCase()),
-                                ),
+                                CircleAvatar(child: Text(name.isEmpty ? '?' : name[0].toUpperCase())),
                                 const SizedBox(width: 12),
                                 Expanded(
                                   child: Column(
@@ -321,17 +301,14 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                                     color: status == 'approved' ? Colors.green : Colors.orange,
                                   ),
                                   label: Text(status),
-                                  backgroundColor: status == 'approved'
-                                      ? Colors.green.withOpacity(.12)
-                                      : Colors.orange.withOpacity(.12),
+                                  backgroundColor: status == 'approved' ? Colors.green.withOpacity(.12) : Colors.orange.withOpacity(.12),
                                   side: BorderSide.none,
                                 ),
                               ],
                             ),
                             const SizedBox(height: 10),
                             Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
+                              spacing: 8, runSpacing: 8,
                               children: [
                                 _InfoChip(icon: Icons.store, label: brName),
                                 _InfoChip(icon: Icons.access_time, label: shName),
@@ -350,15 +327,8 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                                 const SizedBox(width: 12),
                                 DropdownButton<String>(
                                   value: kRoles.contains(role) ? role : 'employee',
-                                  items: kRoles
-                                      .map((r) => DropdownMenuItem(
-                                            value: r,
-                                            child: Text(roleLabel(r)),
-                                          ))
-                                      .toList(),
-                                  onChanged: (v) {
-                                    if (v != null) _setRole(u.id, v);
-                                  },
+                                  items: kRoles.map((r) => DropdownMenuItem(value: r, child: Text(roleLabel(r)))).toList(),
+                                  onChanged: (v) { if (v != null) _setRole(u.id, v); },
                                 ),
                                 const Spacer(),
                                 OutlinedButton.icon(
@@ -387,7 +357,6 @@ class _FilterBox extends StatelessWidget {
   final String label;
   final Widget child;
   const _FilterBox({required this.label, required this.child});
-
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -400,10 +369,7 @@ class _FilterBox extends StatelessWidget {
             border: Border.all(color: Colors.grey.withOpacity(.4)),
             borderRadius: BorderRadius.circular(10),
           ),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: child,
-          ),
+          child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8), child: child),
         ),
       ],
     );
@@ -414,26 +380,18 @@ class _InfoChip extends StatelessWidget {
   final IconData icon;
   final String label;
   const _InfoChip({required this.icon, required this.label});
-
   @override
   Widget build(BuildContext context) {
-    return Chip(
-      avatar: Icon(icon, size: 18),
-      label: Text(label),
-      side: BorderSide(color: Colors.grey.withOpacity(.25)),
-    );
+    return Chip(avatar: Icon(icon, size: 18), label: Text(label), side: BorderSide(color: Colors.grey.withOpacity(.25)));
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/*                                PAYROLL DIALOG                              */
-/* -------------------------------------------------------------------------- */
+/* ============================= PAYROLL DIALOG ============================= */
 
 class PayrollDialog extends StatefulWidget {
   final String uid;
   final Map<String, dynamic> userData;
   const PayrollDialog({super.key, required this.uid, required this.userData});
-
   @override
   State<PayrollDialog> createState() => _PayrollDialogState();
 }
@@ -447,8 +405,12 @@ class _PayrollDialogState extends State<PayrollDialog> {
   @override
   void initState() {
     super.initState();
-    final base = (widget.userData['baseSalary'] ?? 0).toString();
-    _baseSalaryCtrl = TextEditingController(text: base);
+    // نقرأ من أي اسم محتمل للراتب الأساسي
+    final base = _numLike(widget.userData['baseSalary']) +
+        _numLike(widget.userData['base_salary']) +
+        _numLike(widget.userData['salary']) +
+        _numLike(widget.userData['monthlySalary']);
+    _baseSalaryCtrl = TextEditingController(text: base == 0 ? '' : base.toStringAsFixed(2));
   }
 
   @override
@@ -459,12 +421,9 @@ class _PayrollDialogState extends State<PayrollDialog> {
   }
 
   Future<void> _saveBaseSalary() async {
-    final v = double.tryParse(_baseSalaryCtrl.text.trim()) ?? 0.0;
+    final v = _numLike(_baseSalaryCtrl.text);
     await FirebaseFirestore.instance.doc('users/${widget.uid}').set(
-      {
-        'baseSalary': v,
-        'updatedAt': FieldValue.serverTimestamp(),
-      },
+      {'baseSalary': v, 'updatedAt': FieldValue.serverTimestamp()},
       SetOptions(merge: true),
     );
     if (mounted) {
@@ -474,16 +433,12 @@ class _PayrollDialogState extends State<PayrollDialog> {
   }
 
   Future<void> _addTransaction() async {
-    final amt = double.tryParse(_amountCtrl.text.trim()) ?? 0.0;
+    final amt = _numLike(_amountCtrl.text);
     if (amt == 0) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Amount must be non-zero')));
       return;
     }
-    await FirebaseFirestore.instance
-        .collection('users')
-        .doc(widget.uid)
-        .collection('payroll')
-        .add({
+    await FirebaseFirestore.instance.collection('users').doc(widget.uid).collection('payroll').add({
       'type': _trxType, // bonus | allowance | deduction
       'amount': amt,
       'date': Timestamp.fromDate(DateTime(_trxDate.year, _trxDate.month, _trxDate.day)),
@@ -498,7 +453,7 @@ class _PayrollDialogState extends State<PayrollDialog> {
 
   @override
   Widget build(BuildContext context) {
-    // آخر 12 حركة للعرض السريع
+    // آخر 12 حركة
     final trxStream = FirebaseFirestore.instance
         .collection('users')
         .doc(widget.uid)
@@ -514,34 +469,21 @@ class _PayrollDialogState extends State<PayrollDialog> {
         child: SingleChildScrollView(
           child: Column(
             children: [
-              // الراتب الأساسي
               Row(
                 children: [
                   Expanded(
                     child: TextField(
                       controller: _baseSalaryCtrl,
                       keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      decoration: const InputDecoration(
-                        labelText: 'Base salary',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
+                      decoration: const InputDecoration(labelText: 'Base salary', border: OutlineInputBorder(), isDense: true),
                     ),
                   ),
                   const SizedBox(width: 8),
-                  FilledButton(
-                    onPressed: _saveBaseSalary,
-                    child: const Text('Save'),
-                  ),
+                  FilledButton(onPressed: _saveBaseSalary, child: const Text('Save')),
                 ],
               ),
               const SizedBox(height: 16),
-
-              // إضافة حركة
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Text('Add transaction', style: Theme.of(context).textTheme.titleMedium),
-              ),
+              Align(alignment: Alignment.centerLeft, child: Text('Add transaction', style: Theme.of(context).textTheme.titleMedium)),
               const SizedBox(height: 8),
               Row(
                 children: [
@@ -559,11 +501,7 @@ class _PayrollDialogState extends State<PayrollDialog> {
                     child: TextField(
                       controller: _amountCtrl,
                       keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      decoration: const InputDecoration(
-                        labelText: 'Amount',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
+                      decoration: const InputDecoration(labelText: 'Amount', border: OutlineInputBorder(), isDense: true),
                     ),
                   ),
                   const SizedBox(width: 8),
@@ -577,59 +515,37 @@ class _PayrollDialogState extends State<PayrollDialog> {
                       );
                       if (picked != null) setState(() => _trxDate = picked);
                     },
-                    child: Text('${_trxDate.year}-${_trxDate.month.toString().padLeft(2, '0')}-${_trxDate.day.toString().padLeft(2, '0')}'),
+                    child: Text('${_trxDate.year}-${_trxDate.month.toString().padLeft(2, "0")}-${_trxDate.day.toString().padLeft(2, "0")}'),
                   ),
                   const SizedBox(width: 8),
-                  FilledButton.icon(
-                    onPressed: _addTransaction,
-                    icon: const Icon(Icons.add),
-                    label: const Text('Add'),
-                  ),
+                  FilledButton.icon(onPressed: _addTransaction, icon: const Icon(Icons.add), label: const Text('Add')),
                 ],
               ),
-
               const SizedBox(height: 16),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Text('Recent transactions', style: Theme.of(context).textTheme.titleMedium),
-              ),
+              Align(alignment: Alignment.centerLeft, child: Text('Recent transactions', style: Theme.of(context).textTheme.titleMedium)),
               const SizedBox(height: 8),
-
-              // جدول آخر الحركات
               StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                 stream: trxStream,
                 builder: (context, snap) {
                   if (snap.connectionState == ConnectionState.waiting) {
-                    return const Padding(
-                      padding: EdgeInsets.all(16),
-                      child: LinearProgressIndicator(),
-                    );
+                    return const Padding(padding: EdgeInsets.all(16), child: LinearProgressIndicator());
                   }
                   final docs = snap.data?.docs ?? [];
-                  if (docs.isEmpty) {
-                    return const Padding(
-                      padding: EdgeInsets.all(8),
-                      child: Text('No transactions'),
-                    );
-                  }
+                  if (docs.isEmpty) return const Padding(padding: EdgeInsets.all(8), child: Text('No transactions'));
                   return Column(
                     children: docs.map((d) {
                       final m = d.data();
                       final t = (m['type'] ?? '').toString();
-                      final a = (m['amount'] ?? 0).toDouble();
-                      final dt = (m['date'] is Timestamp)
-                          ? (m['date'] as Timestamp).toDate()
-                          : DateTime.now();
+                      final a = _numLike(m['amount']);
+                      final dt = _tsOrNull(m['date'])?.toDate() ?? _tsOrNull(m['createdAt'])?.toDate() ?? DateTime.now();
                       return ListTile(
                         dense: true,
                         title: Text('$t  •  ${a.toStringAsFixed(2)}'),
-                        subtitle: Text('${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}'),
+                        subtitle: Text('${dt.year}-${dt.month.toString().padLeft(2, "0")}-${dt.day.toString().padLeft(2, "0")}'),
                         trailing: IconButton(
                           tooltip: 'Delete',
                           icon: const Icon(Icons.delete_outline),
-                          onPressed: () async {
-                            await d.reference.delete();
-                          },
+                          onPressed: () async => d.reference.delete(),
                         ),
                       );
                     }).toList(),
@@ -640,16 +556,12 @@ class _PayrollDialogState extends State<PayrollDialog> {
           ),
         ),
       ),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
-      ],
+      actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close'))],
     );
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/*                          CSV EXPORT (COMPATIBLE)                           */
-/* -------------------------------------------------------------------------- */
+/* ======================== CSV EXPORT (COMPATIBLE) ======================== */
 
 Future<void> exportUsersCsvMonthlyCompat({
   required Query<Map<String, dynamic>> usersQuery,
@@ -691,20 +603,9 @@ Future<void> exportUsersCsvMonthlyCompat({
 
   final rows = <List<String>>[
     [
-      'Name',
-      'Email',
-      'Role',
-      'Status',
-      'Branch',
-      'Shift',
-      'Base Salary',
-      'Bonuses/Allowances (month)',
-      'Deductions (month)',
-      'Net Salary (month)',
-      'UID',
-      'Branch ID',
-      'Shift ID',
-      'Month',
+      'Name','Email','Role','Status','Branch','Shift',
+      'Base Salary','Bonuses/Allowances (month)','Deductions (month)','Net Salary (month)',
+      'UID','Branch ID','Shift ID','Month',
     ],
   ];
 
@@ -723,42 +624,58 @@ Future<void> exportUsersCsvMonthlyCompat({
     final brNm  = (m['branchName'] ?? (branchNames[brId] ?? (brId.isEmpty ? 'No branch' : brId))).toString();
     final shNm  = (m['shiftName']  ?? (shiftNames[shId]  ?? (shId.isEmpty ? 'No shift'  : shId ))).toString();
 
-    // 1) راتب أساسي من مستند المستخدم
+    // 1) base salary من أي حقل شائع
     double baseSalary = 0;
-    final _base = m['baseSalary'];
-    if (_base is num) baseSalary = _base.toDouble();
-    if (_base is String) baseSalary = double.tryParse(_base) ?? 0.0;
+    baseSalary += _numLike(m['baseSalary']);
+    baseSalary += _numLike(m['base_salary']);
+    baseSalary += _numLike(m['salary']);
+    baseSalary += _numLike(m['monthlySalary']);
 
-    // 2) مجاميع مباشرة محفوظة في مستند المستخدم (لو كنت مدخلها هناك)
+    // 2) مجاميع محفوظة مباشرة في مستند المستخدم (aliases كثيرة)
     double bonusesFixed = 0;
-    for (final key in ['bonus', 'bonuses', 'allowance', 'allowances']) {
-      final v = m[key];
-      if (v is num) bonusesFixed += v.toDouble();
-      if (v is String) bonusesFixed += double.tryParse(v) ?? 0.0;
-    }
-    double deductionsFixed = 0;
-    for (final key in ['deduction', 'deductions']) {
-      final v = m[key];
-      if (v is num) deductionsFixed += v.toDouble();
-      if (v is String) deductionsFixed += double.tryParse(v) ?? 0.0;
+    for (final key in [
+      'bonus','bonuses','bonusTotal','bonusesTotal',
+      'allowance','allowances','allowanceTotal','allowancesTotal',
+      'overtime','overtimeAmount'
+    ]) {
+      bonusesFixed += _numLike(m[key]);
     }
 
-    // 3) حركات شهرية من subcollection (لو موجودة)
-    double bonusesVar = 0;
-    double deductionsVar = 0;
+    double deductionsFixed = 0;
+    for (final key in [
+      'deduction','deductions','deductionTotal','deductionsTotal',
+      'penalty','penalties','penaltiesTotal'
+    ]) {
+      deductionsFixed += _numLike(m[key]);
+    }
+
+    // 3) حركات شهرية من subcollection (تاريخ: date أو txnDate أو createdAt)
+    double bonusesVar = 0, deductionsVar = 0;
     try {
+      // هنجيب عدد معقول ونرشّح في الذاكرة لو ماقدرناش نستخدم where على كل الأسماء.
       final trx = await FirebaseFirestore.instance
           .collection('users').doc(uid).collection('payroll')
-          .where('date', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
-          .where('date', isLessThanOrEqualTo: Timestamp.fromDate(end))
+          .orderBy('date', descending: true)
+          .limit(500)
           .get();
 
-      for (final d in trx.docs) {
-        final t = (d['type'] ?? '').toString().toLowerCase();
-        final amountAny = d['amount'];
-        double amount = 0.0;
-        if (amountAny is num) amount = amountAny.toDouble();
-        if (amountAny is String) amount = double.tryParse(amountAny) ?? 0.0;
+      final otherTrx = await FirebaseFirestore.instance
+          .collection('users').doc(uid).collection('payroll')
+          .orderBy('createdAt', descending: true)
+          .limit(500)
+          .get();
+
+      final allDocs = <QueryDocumentSnapshot<Map<String, dynamic>>>{}
+        ..addAll(trx.docs) ..addAll(otherTrx.docs);
+
+      for (final d in allDocs) {
+        final mm = d.data();
+        final t = (mm['type'] ?? '').toString().toLowerCase();
+        final amount = _numLike(mm['amount']);
+        final ts = _tsOrNull(mm['date']) ?? _tsOrNull(mm['txnDate']) ?? _tsOrNull(mm['createdAt']);
+        final dt = ts?.toDate();
+        if (dt == null) continue;
+        if (dt.isBefore(start) || dt.isAfter(end)) continue;
 
         if (t == 'bonus' || t == 'allowance') {
           bonusesVar += amount;
@@ -766,33 +683,24 @@ Future<void> exportUsersCsvMonthlyCompat({
           deductionsVar += amount;
         }
       }
-    } catch (_) {
-      // تجاهل
-    }
+    } catch (_) {}
 
     final bonuses = bonusesFixed + bonusesVar;
     final deductions = deductionsFixed + deductionsVar;
     final net = (baseSalary + bonuses) - deductions;
 
     rows.add([
-      name,
-      email,
-      role,
-      stat,
-      brNm,
-      shNm,
+      name, email, role, stat, brNm, shNm,
       baseSalary.toStringAsFixed(2),
       bonuses.toStringAsFixed(2),
       deductions.toStringAsFixed(2),
       net.toStringAsFixed(2),
-      uid,
-      brId,
-      shId,
+      uid, brId, shId,
       '${start.year}-${start.month.toString().padLeft(2, "0")}',
     ]);
   }
 
-  if (!kIsWeb) return; // تصدير الويب فقط هنا
+  if (!kIsWeb) return;
   final csv = const ListToCsvConverter().convert(rows);
   final bytes = utf8.encode(csv);
   final blob = html.Blob([bytes], 'text/csv;charset=utf-8;');
