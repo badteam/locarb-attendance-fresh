@@ -1,4 +1,4 @@
-// lib/screens/admin_user_screen.dart
+// lib/screens/admin_users_screen.dart
 import 'dart:convert';
 import 'dart:html' as html; // لتنزيل CSV على الويب
 
@@ -372,9 +372,11 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
     final dt = DateTime.now();
     final br = branchFilterId == 'all' ? 'ALL' : branchFilterId;
     final sh = shiftFilterId == 'all' ? 'ALL' : shiftFilterId;
+
+    // ✅ هنا كانت المشكلة: استخدم أسماء المتغيرات الصحيحة
     final fileName =
-       'users_${_statusTab}_role-$_roleFilter_branch-$_branchFilterId_shift-$_shiftFilterId_${dt.year}-${dt.month.toString().padLeft(2,'0')}-${dt.day.toString().padLeft(2,'0')}.csv';
-    
+        'users_${_statusTab}_role-$roleFilter_branch-$br_shift-$sh_${dt.year}-${dt.month.toString().padLeft(2,'0')}-${dt.day.toString().padLeft(2,'0')}.csv';
+
     final anchor = html.AnchorElement(href: url)
       ..setAttribute('download', fileName)
       ..click();
