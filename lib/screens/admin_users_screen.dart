@@ -376,6 +376,14 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
     await _loadAbsencesData();
   }
 
+  // ✅ محول عام لأي تمثيل تاريخ -> DateTime
+  DateTime _dateFromAny(dynamic v) {
+    if (v is DateTime) return v;
+    if (v is Timestamp) return v.toDate();
+    if (v is String) return DateTime.tryParse(v) ?? DateTime(1970, 1, 1);
+    return DateTime(1970, 1, 1);
+  }
+
   // --- NEW: نجمع الـattendance مباشرة من الـDB حسب الschema الجديد ---
   Future<void> _loadAbsencesData() async {
     if (_range == null) return;
@@ -383,8 +391,8 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
 
     try {
       final settings = await _attSvc.loadSettings();
-      final weekend = settings.weekendDays;
-      final holidays = settings.holidays;
+      final weekend = settings.weekendDays; // ممكن List<int> أو List<String>
+      final holidays = settings.holidays;   // ممكن List<DateTime> أو List<Timestamp> أو List<String>
 
       final from = _range!.start;
       final to = _range!.end;
@@ -402,7 +410,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
 
       final List<_ExceptionRow> rows = [];
 
-      // نجلب لكل موظف حضوره في المدى المراد (استعلام واحد لكل موظف)
+      // نطاق اليوم كنص ISO
       final fromStr = _dayKey(from);
       final toStr = _dayKey(to);
 
@@ -441,9 +449,16 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
           final dayKey = _dayKey(day);
           final types = dayTypes[dayKey] ?? const <String>{};
 
-          final isHoliday = holidays.any((h) => _sameDay(h, day));
-          final isWeekend = weekend.contains(day.weekday % 7 == 0 ? 7 : day.weekday)
-              || weekend.contains(_weekdayName(day.weekday));
+          // ✅ حساب العطلات والويكند بشكل آمن للأنواع
+          final isHoliday = holidays.any((h) => _sameDay(_dateFromAny(h), day));
+
+          bool _weekendHasInt(int w) => weekend.any((x) => x is int && x == w);
+          bool _weekendHasName(String n) =>
+              weekend.any((x) => x is String && x.toString().toLowerCase() == n);
+
+          final int dartW = day.weekday; // 1=Mon..7=Sun
+          final String nameW = _weekdayName(dartW); // 'mon'..'sun'
+          final isWeekend = _weekendHasInt(dartW) || _weekendHasName(nameW);
 
           final status = _calcStatusFromTypes(
             types: types,
@@ -451,7 +466,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
             isHoliday: isHoliday,
           );
 
-          // فلتر نوع العرض
+          // فلترة نوع العرض
           if (_typeFilter == 'absent') {
             if (status != 'absent') continue;
           } else if (_typeFilter == 'missing') {
@@ -470,8 +485,8 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
             shiftName: shName,
             date: day,
             status: status,
-            note: '', // ممكن نضيف ملاحظات لاحقًا
-            proofUrl: '', // proof optional
+            note: '', // optional
+            proofUrl: '',
             missing: status == 'incomplete_in'
                 ? const ['in']
                 : status == 'incomplete_out'
@@ -530,11 +545,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
       '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 
   bool _sameDay(DateTime a, DateTime b) =>
-      a.year == b.year && a.month == b.month && a.day == b.day;
-
-  // weekendDays ممكن تيجي عندك كأرقام (1..7) أو أسماء ('fri','sat'…)
-  bool _isNameWeekend(dynamic v) =>
-      v is String && const ['sun','mon','tue','wed','thu','fri','sat'].contains(v.toLowerCase());
+    a.year == b.year && a.month == b.month && a.day == b.day;
 
   String _weekdayName(int dartWeekday) {
     // Dart: 1=Mon..7=Sun — نخلي أسماء lowercase
