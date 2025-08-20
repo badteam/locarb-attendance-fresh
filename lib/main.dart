@@ -84,6 +84,8 @@ class App extends StatelessWidget {
             '/branches': (_) => const BranchesShiftsScreen(),             // ✅ بدل BranchesScreen
             '/admin': (_) => const AdminPanelScreen(),
             '/employee': (_) => const EmployeeHomeScreen(),
+            '/absences': (_) => const AbsencesScreen(),
+
           },
         );
       },
