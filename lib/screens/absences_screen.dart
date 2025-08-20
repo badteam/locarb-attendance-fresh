@@ -1,8 +1,7 @@
 // lib/screens/absences_screen.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import '../utils/attendance_utils.dart';
-import '../widgets/resolve_absence_dialog.dart';
+import '../services/attendance_service.dart';
 
 class AbsencesScreen extends StatefulWidget {
   const AbsencesScreen({super.key});
@@ -12,286 +11,457 @@ class AbsencesScreen extends StatefulWidget {
 }
 
 class _AbsencesScreenState extends State<AbsencesScreen> {
-  final fs = FirebaseFirestore.instance;
+  final _svc = AttendanceService();
 
-  DateTime _from = DateTime(DateTime.now().year, DateTime.now().month, 1);
-  DateTime _to = DateTime(DateTime.now().year, DateTime.now().month + 1, 0);
+  // فلاتر
+  DateTimeRange? _range;
+  String _branchFilterId = 'all';
+  String _shiftFilterId = 'all';
+  String _typeFilter = 'exceptions'; // exceptions | absent | missing
 
-  String _branchId = 'all';
-  String _shiftId = 'all';
-  String _status = 'anomalies'; // anomalies|all|absent|present|leave|weekend|holiday
-
+  // كاش
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _branches = [];
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _shifts = [];
-  bool _busy = false;
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _users = []; // approved فقط
+
+  // النتائج
+  bool _loading = false;
+  List<_ExceptionRow> _rows = [];
 
   @override
   void initState() {
     super.initState();
-    _loadRefs();
+    final now = DateTime.now();
+    _range = DateTimeRange(
+      start: DateTime(now.year, now.month, 1),
+      end: DateTime(now.year, now.month + 1, 0, 23, 59, 59),
+    );
+    _loadRefs().then((_) => _loadData());
   }
 
   Future<void> _loadRefs() async {
+    final fs = FirebaseFirestore.instance;
     final br = await fs.collection('branches').orderBy('name').get();
     final sh = await fs.collection('shifts').orderBy('name').get();
+    final us = await fs.collection('users').where('status', isEqualTo: 'approved').orderBy('fullName').get();
     setState(() {
       _branches = br.docs;
       _shifts = sh.docs;
+      _users = us.docs;
     });
   }
 
-  Future<void> _pickFrom() async {
-    final d = await showDatePicker(context: context, initialDate: _from, firstDate: DateTime(2022), lastDate: DateTime(2100));
-    if (d != null) setState(() => _from = DateTime(d.year, d.month, d.day));
-  }
+  Future<void> _loadData() async {
+    if (_range == null) return;
+    setState(() => _loading = true);
 
-  Future<void> _pickTo() async {
-    final d = await showDatePicker(context: context, initialDate: _to, firstDate: DateTime(2022), lastDate: DateTime(2100));
-    if (d != null) setState(() => _to = DateTime(d.year, d.month, d.day, 23, 59, 59));
-  }
+    final from = _range!.start;
+    final to = _range!.end;
 
-  // يبني ملخصات للفترة للمستخدمين الموجودين حاليًا بحسب الفلاتر (خفيف مبدئيًا)
-  Future<void> _buildSummariesForVisibleUsers() async {
-    if (_busy) return;
-    setState(() => _busy = true);
-    try {
-      // هنجلب المستخدمين بحسب الفروع/الشفت لو الفلاتر مش "all"
-      Query<Map<String, dynamic>> uq = fs.collection('users').where('status', isEqualTo: 'approved');
-      if (_branchId != 'all') uq = uq.where('primaryBranchId', isEqualTo: _branchId);
-      if (_shiftId != 'all') uq = uq.where('assignedShiftId', isEqualTo: _shiftId);
-      final users = await uq.get();
-      final util = AttendanceUtils(fs);
+    final settings = await _svc.loadSettings();
+    final weekend = settings.weekendDays;
+    final holidays = settings.holidays;
 
-      // حرس حدود بسيط (ما بين 1..62 يوم)
-      final from = DateTime(_from.year, _from.month, _from.day);
-      final to = DateTime(_to.year, _to.month, _to.day);
-      int days = to.difference(from).inDays.abs() + 1;
-      if (days > 62) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Range too large (max ~62 days).')));
-        return;
+    final days = _svc.daysRange(from, to);
+
+    // فلترة المستخدمين حسب الفرع/الشفت لو مطلوب
+    final filteredUsers = _users.where((u) {
+      final m = u.data();
+      if (_branchFilterId != 'all' && (m['primaryBranchId'] ?? '') != _branchFilterId) return false;
+      if (_shiftFilterId != 'all' && (m['assignedShiftId'] ?? '') != _shiftFilterId) return false;
+      return true;
+    }).toList();
+
+    final rows = <_ExceptionRow>[];
+
+    // لوب بسيطة (افتراضيًا فرق صغير، لو الفريق كبير هنحتاج تحسين لاحقًا)
+    for (final u in filteredUsers) {
+      final uid = u.id;
+      final m = u.data();
+      final name = (m['fullName'] ?? m['username'] ?? m['email'] ?? '').toString();
+      final brName = (m['branchName'] ?? '').toString();
+      final shName = (m['shiftName'] ?? '').toString();
+
+      for (final day in days) {
+        final summary = await _svc.ensureDailySummary(
+          uid: uid,
+          date: day,
+          weekendDays: weekend,
+          holidays: holidays,
+        );
+        final status = (summary['status'] ?? '').toString();
+        if (_typeFilter == 'absent') {
+          if (status != 'absent') continue;
+        } else if (_typeFilter == 'missing') {
+          if (status != 'incomplete_in' && status != 'incomplete_out') continue;
+        } else {
+          // exceptions = absent + missing
+          if (status != 'absent' && status != 'incomplete_in' && status != 'incomplete_out') continue;
+        }
+
+        rows.add(_ExceptionRow(
+          uid: uid,
+          userName: name,
+          branchName: brName,
+          shiftName: shName,
+          date: day,
+          status: status,
+          note: (summary['note'] ?? '').toString(),
+          proofUrl: (summary['proofUrl'] ?? '').toString(),
+          missing: (summary['missing'] is List)
+              ? (summary['missing'] as List).map((e) => e.toString()).toList()
+              : const <String>[],
+        ));
       }
-
-      for (final u in users.docs) {
-        await util.ensureDailySummaryForRangeOne(uid: u.id, from: from, to: to);
-      }
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Daily summaries built.')));
-      setState(() {});
-    } finally {
-      setState(() => _busy = false);
     }
+
+    setState(() {
+      _rows = rows;
+      _loading = false;
+    });
   }
 
-  Query<Map<String, dynamic>> _query() {
-    // نستخدم collectionGroup('users') داخل dailyAttendance
-    // لازم يكون عند كل doc حقل 'date' (Timestamp) و 'day' (String)، وهو ما نكتبه في utils
-    Query<Map<String, dynamic>> q = fs.collectionGroup('users')
-        .where('date', isGreaterThanOrEqualTo: Timestamp.fromDate(DateTime(_from.year, _from.month, _from.day)))
-        .where('date', isLessThanOrEqualTo: Timestamp.fromDate(DateTime(_to.year, _to.month, _to.day, 23, 59, 59)))
-        .orderBy('date', descending: true);
-
-    if (_status != 'all' && _status != 'anomalies') {
-      q = q.where('status', isEqualTo: _status);
-    }
-    if (_branchId != 'all') {
-      q = q.where('branchId', isEqualTo: _branchId);
-    }
-    if (_shiftId != 'all') {
-      q = q.where('shiftId', isEqualTo: _shiftId);
-    }
-    return q;
-  }
-
-  bool _matchesAnomaly(Map<String, dynamic> m) {
-    if (_status != 'anomalies') return true; // لا نصفي هنا لو مش وضع anomalies
-    final f = (m['flags'] ?? {}) as Map<String, dynamic>;
-    final mi = (f['missingIn'] ?? false) == true;
-    final mo = (f['missingOut'] ?? false) == true;
-    final obi = (f['outBeforeIn'] ?? false) == true;
-    return mi || mo || obi || (m['status'] == 'absent');
-  }
-
-  Color _statusColor(String s) {
-    switch (s) {
-      case 'present': return Colors.green;
-      case 'leave': return Colors.blue;
-      case 'weekend': return Colors.grey;
-      case 'holiday': return Colors.indigo;
-      case 'absent': return Colors.red;
-      default: return Colors.orange;
-    }
-  }
-
-  String _branchName(String? id) {
-    if (id == null || id.isEmpty) return '—';
-    final found = _branches.firstWhere(
-      (b) => b.id == id,
-      orElse: () => DummyDoc('—'),
-    );
-    return found is DummyDoc ? '—' : ((found.data()['name'] ?? '').toString());
-  }
-
-  String _shiftName(String? id) {
-    if (id == null || id.isEmpty) return '—';
-    final found = _shifts.firstWhere(
-      (s) => s.id == id,
-      orElse: () => DummyDoc('—'),
-    );
-    return found is DummyDoc ? '—' : ((found.data()['name'] ?? '').toString());
-  }
+  // ---------- UI ----------
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Absences & Anomalies'),
+        title: const Text('Absences & Missing IN/OUT'),
         actions: [
           IconButton(
-            tooltip: 'Build summaries',
-            onPressed: _busy ? null : _buildSummariesForVisibleUsers,
-            icon: const Icon(Icons.build),
+            onPressed: _loading ? null : _loadData,
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Refresh',
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 6),
         ],
       ),
       body: Column(
         children: [
-          Card(
-            margin: const EdgeInsets.fromLTRB(8, 10, 8, 6),
-            child: Padding(
-              padding: const EdgeInsets.all(8),
-              child: Wrap(
-                spacing: 8,
-                runSpacing: 6,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  OutlinedButton.icon(
-                    onPressed: _pickFrom,
-                    icon: const Icon(Icons.date_range),
-                    label: Text('From: ${_from.year}-${_2(_from.month)}-${_2(_from.day)}'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: _pickTo,
-                    icon: const Icon(Icons.event),
-                    label: Text('To: ${_to.year}-${_2(_to.month)}-${_2(_to.day)}'),
-                  ),
-                  DropdownButtonHideUnderline(
-                    child: DropdownButton<String>(
-                      value: _status,
-                      items: const [
-                        DropdownMenuItem(value: 'anomalies', child: Text('Anomalies only')),
-                        DropdownMenuItem(value: 'all', child: Text('All statuses')),
-                        DropdownMenuItem(value: 'absent', child: Text('Absent')),
-                        DropdownMenuItem(value: 'present', child: Text('Present')),
-                        DropdownMenuItem(value: 'leave', child: Text('Leave')),
-                        DropdownMenuItem(value: 'weekend', child: Text('Weekend')),
-                        DropdownMenuItem(value: 'holiday', child: Text('Holiday')),
-                      ],
-                      onChanged: (v) => setState(() => _status = v ?? 'anomalies'),
-                    ),
-                  ),
-                  DropdownButtonHideUnderline(
-                    child: DropdownButton<String>(
-                      value: _branchId,
-                      items: [
-                        const DropdownMenuItem(value: 'all', child: Text('All branches')),
-                        ..._branches.map((b) => DropdownMenuItem(
-                              value: b.id,
-                              child: Text((b.data()['name'] ?? '').toString()),
-                            )),
-                      ],
-                      onChanged: (v) => setState(() => _branchId = v ?? 'all'),
-                    ),
-                  ),
-                  DropdownButtonHideUnderline(
-                    child: DropdownButton<String>(
-                      value: _shiftId,
-                      items: [
-                        const DropdownMenuItem(value: 'all', child: Text('All shifts')),
-                        ..._shifts.map((s) => DropdownMenuItem(
-                              value: s.id,
-                              child: Text((s.data()['name'] ?? '').toString()),
-                            )),
-                      ],
-                      onChanged: (v) => setState(() => _shiftId = v ?? 'all'),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
+          _filtersBar(),
           const Divider(height: 1),
           Expanded(
-            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: _query().snapshots(),
-              builder: (context, s) {
-                if (s.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                if (!s.hasData) return const Center(child: Text('No data'));
-                final docs = s.data!.docs.where((d) => _matchesAnomaly(d.data())).toList();
-                if (docs.isEmpty) return const Center(child: Text('Nothing to show with current filters.'));
-                return ListView.separated(
-                  itemCount: docs.length,
-                  separatorBuilder: (_, __) => const Divider(height: 1),
-                  itemBuilder: (context, i) {
-                    final m = docs[i].data();
-                    final uid = (m['uid'] ?? '').toString();
-                    final dayKey = (m['day'] ?? '').toString();
-                    final status = (m['status'] ?? '').toString();
-                    final f = (m['flags'] ?? {}) as Map<String, dynamic>;
-                    final mi = (f['missingIn'] ?? false) == true;
-                    final mo = (f['missingOut'] ?? false) == true;
-                    final obi = (f['outBeforeIn'] ?? false) == true;
-                    final brId = (m['branchId'] ?? '').toString();
-                    final shId = (m['shiftId'] ?? '').toString();
-
-                    return ListTile(
-                      leading: CircleAvatar(backgroundColor: _statusColor(status)),
-                      title: Text('$dayKey • $status'),
-                      subtitle: Wrap(
-                        spacing: 6,
-                        runSpacing: 4,
-                        children: [
-                          if (mi) const Chip(label: Text('Missing IN')),
-                          if (mo) const Chip(label: Text('Missing OUT')),
-                          if (obi) const Chip(label: Text('OUT before IN')),
-                          Chip(label: Text('Branch: ${_branchName(brId)}')),
-                          Chip(label: Text('Shift: ${_shiftName(shId)}')),
-                        ],
+            child: _loading
+                ? const Center(child: CircularProgressIndicator())
+                : _rows.isEmpty
+                    ? const Center(child: Text('No exceptions for selected filters.'))
+                    : ListView.separated(
+                        itemCount: _rows.length,
+                        separatorBuilder: (_, __) => const Divider(height: 1),
+                        itemBuilder: (_, i) => _rowTile(_rows[i]),
                       ),
-                      trailing: FilledButton(
-                        onPressed: () async {
-                          final changed = await showDialog<bool>(
-                            context: context,
-                            barrierDismissible: false,
-                            builder: (_) => ResolveAbsenceDialog(uid: uid, dayKey: dayKey),
-                          );
-                          if (changed == true && mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Updated')));
-                          }
-                        },
-                        child: const Text('Resolve'),
-                      ),
-                    );
-                  },
-                );
-              },
-            ),
           ),
         ],
       ),
     );
   }
 
-  String _2(int n) => n.toString().padLeft(2, '0');
+  Widget _filtersBar() {
+    return Card(
+      margin: const EdgeInsets.fromLTRB(8, 10, 8, 6),
+      elevation: .5,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        child: Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            // التاريخ
+            FilledButton.tonalIcon(
+              onPressed: () async {
+                final picked = await showDateRangePicker(
+                  context: context,
+                  firstDate: DateTime(2022),
+                  lastDate: DateTime(2100),
+                  initialDateRange: _range,
+                );
+                if (picked != null) setState(() => _range = picked);
+              },
+              icon: const Icon(Icons.date_range),
+              label: Text(_range == null
+                  ? 'Pick date range'
+                  : '${_fmtD(_range!.start)} → ${_fmtD(_range!.end)}'),
+            ),
+
+            // نوع الحالات
+            DropdownButtonHideUnderline(
+              child: DropdownButton<String>(
+                value: _typeFilter,
+                items: const [
+                  DropdownMenuItem(value: 'exceptions', child: Text('Absent + Missing')),
+                  DropdownMenuItem(value: 'absent', child: Text('Absent only')),
+                  DropdownMenuItem(value: 'missing', child: Text('Missing IN/OUT only')),
+                ],
+                onChanged: (v) => setState(() => _typeFilter = v ?? 'exceptions'),
+              ),
+            ),
+
+            // فرع
+            DropdownButtonHideUnderline(
+              child: DropdownButton<String>(
+                value: _branchFilterId,
+                items: [
+                  const DropdownMenuItem(value: 'all', child: Text('All branches')),
+                  ..._branches.map((b) => DropdownMenuItem(
+                        value: b.id,
+                        child: Text((b.data()['name'] ?? '').toString()),
+                      )),
+                ],
+                onChanged: (v) => setState(() => _branchFilterId = v ?? 'all'),
+              ),
+            ),
+
+            // شفت
+            DropdownButtonHideUnderline(
+              child: DropdownButton<String>(
+                value: _shiftFilterId,
+                items: [
+                  const DropdownMenuItem(value: 'all', child: Text('All shifts')),
+                  ..._shifts.map((s) => DropdownMenuItem(
+                        value: s.id,
+                        child: Text((s.data()['name'] ?? '').toString()),
+                      )),
+                ],
+                onChanged: (v) => setState(() => _shiftFilterId = v ?? 'all'),
+              ),
+            ),
+
+            const SizedBox(width: 8),
+            FilledButton.icon(
+              onPressed: _loading ? null : _loadData,
+              icon: const Icon(Icons.search),
+              label: const Text('Apply'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _rowTile(_ExceptionRow r) {
+    final d = r.date;
+    final dateStr = _fmtD(d);
+    final badge = _badge(r.status);
+
+    return ListTile(
+      title: Text('${r.userName} • $dateStr'),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Wrap(spacing: 8, runSpacing: 6, children: [
+            badge,
+            if (r.branchName.isNotEmpty) Chip(label: Text('Branch: ${r.branchName}')),
+            if (r.shiftName.isNotEmpty) Chip(label: Text('Shift: ${r.shiftName}')),
+          ]),
+          if (r.note.isNotEmpty) Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text('Note: ${r.note}'),
+          ),
+          if (r.proofUrl.isNotEmpty) Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text('Proof: ${r.proofUrl}', style: const TextStyle(decoration: TextDecoration.underline)),
+          ),
+        ],
+      ),
+      trailing: PopupMenuButton<String>(
+        onSelected: (v) => _onAction(v, r),
+        itemBuilder: (context) => [
+          if (r.status == 'incomplete_in' || r.status == 'absent')
+            const PopupMenuItem(value: 'fix_in', child: Text('Fix IN…')),
+          if (r.status == 'incomplete_out' || r.status == 'absent')
+            const PopupMenuItem(value: 'fix_out', child: Text('Fix OUT…')),
+          const PopupMenuDivider(),
+          const PopupMenuItem(value: 'mark_present', child: Text('Mark Present')),
+          const PopupMenuItem(value: 'mark_leave', child: Text('Mark Leave')),
+          const PopupMenuItem(value: 'mark_absent', child: Text('Mark Absent')),
+          const PopupMenuDivider(),
+          const PopupMenuItem(value: 'attach_proof', child: Text('Attach proof URL…')),
+          const PopupMenuItem(value: 'reset_auto', child: Text('Reset to Auto')),
+        ],
+      ),
+    );
+  }
+
+  Widget _badge(String status) {
+    Color c;
+    String t;
+    switch (status) {
+      case 'absent':
+        c = Colors.red;
+        t = 'Absent';
+        break;
+      case 'incomplete_in':
+        c = Colors.orange;
+        t = 'Missing IN';
+        break;
+      case 'incomplete_out':
+        c = Colors.orange;
+        t = 'Missing OUT';
+        break;
+      case 'present':
+        c = Colors.green;
+        t = 'Present';
+        break;
+      case 'leave':
+        c = Colors.blue;
+        t = 'Leave';
+        break;
+      case 'weekend':
+        c = Colors.grey;
+        t = 'Weekend';
+        break;
+      case 'holiday':
+        c = Colors.grey;
+        t = 'Holiday';
+        break;
+      default:
+        c = Colors.black54;
+        t = status;
+    }
+    return Chip(
+      label: Text(t, style: const TextStyle(color: Colors.white)),
+      backgroundColor: c,
+    );
+  }
+
+  Future<void> _onAction(String action, _ExceptionRow r) async {
+    final settings = await _svc.loadSettings();
+    switch (action) {
+      case 'fix_in':
+        final picked = await _pickTime('Select IN time');
+        if (picked != null) {
+          await _svc.fixMissing(
+            uid: r.uid,
+            date: r.date,
+            addIn: true,
+            addOut: false,
+            inTime: picked,
+            outTime: null,
+            branchId: null,
+            shiftId: null,
+            note: 'Fixed IN manually',
+            proofUrl: r.proofUrl.isNotEmpty ? r.proofUrl : null,
+            weekendDays: settings.weekendDays,
+            holidays: settings.holidays,
+          );
+          await _loadData();
+        }
+        break;
+
+      case 'fix_out':
+        final picked2 = await _pickTime('Select OUT time');
+        if (picked2 != null) {
+          await _svc.fixMissing(
+            uid: r.uid,
+            date: r.date,
+            addIn: false,
+            addOut: true,
+            inTime: null,
+            outTime: picked2,
+            branchId: null,
+            shiftId: null,
+            note: 'Fixed OUT manually',
+            proofUrl: r.proofUrl.isNotEmpty ? r.proofUrl : null,
+            weekendDays: settings.weekendDays,
+            holidays: settings.holidays,
+          );
+          await _loadData();
+        }
+        break;
+
+      case 'mark_present':
+        await _svc.setManualStatus(uid: r.uid, date: r.date, status: 'present');
+        await _loadData();
+        break;
+
+      case 'mark_leave':
+        await _svc.setManualStatus(uid: r.uid, date: r.date, status: 'leave');
+        await _loadData();
+        break;
+
+      case 'mark_absent':
+        await _svc.setManualStatus(uid: r.uid, date: r.date, status: 'absent');
+        await _loadData();
+        break;
+
+      case 'attach_proof':
+        final url = await _askText('Attach proof URL', hint: 'https://… or gs://…');
+        if (url != null && url.trim().isNotEmpty) {
+          await _svc.setManualStatus(
+            uid: r.uid,
+            date: r.date,
+            status: r.status, // نحافظ على نفس الحالة
+            proofUrl: url.trim(),
+          );
+          await _loadData();
+        }
+        break;
+
+      case 'reset_auto':
+        // نحذف المصدر اليدوي → نخلي ensureDailySummary يبنيها تلقائيًا
+        final key = _svc.dayKey(r.date);
+        await FirebaseFirestore.instance
+            .collection('dailyAttendance')
+            .doc(key)
+            .collection('users')
+            .doc(r.uid)
+            .set({'source': 'auto'}, SetOptions(merge: true));
+        await _loadData();
+        break;
+    }
+  }
+
+  Future<TimeOfDay?> _pickTime(String title) async {
+    final now = TimeOfDay.now();
+    return showTimePicker(context: context, initialTime: now, helpText: title);
+  }
+
+  Future<String?> _askText(String title, {String? hint}) async {
+    final c = TextEditingController();
+    return showDialog<String?>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(title),
+        content: TextField(
+          controller: c,
+          decoration: InputDecoration(
+            hintText: hint,
+            border: const OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(context, c.text), child: const Text('Save')),
+        ],
+      ),
+    );
+  }
+
+  String _fmtD(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 }
 
-// كائن بسيط لتجاوز البحث عندما لا نجد فرع/شيفت
-class DummyDoc implements QueryDocumentSnapshot<Map<String, dynamic>> {
-  DummyDoc(this._id);
-  final String _id;
-  @override noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
-  @override String get id => _id;
+class _ExceptionRow {
+  final String uid;
+  final String userName;
+  final String branchName;
+  final String shiftName;
+  final DateTime date;
+  final String status;
+  final String note;
+  final String proofUrl;
+  final List<String> missing;
+  _ExceptionRow({
+    required this.uid,
+    required this.userName,
+    required this.branchName,
+    required this.shiftName,
+    required this.date,
+    required this.status,
+    required this.note,
+    required this.proofUrl,
+    required this.missing,
+  });
 }
