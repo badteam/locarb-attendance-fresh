@@ -14,7 +14,6 @@ import 'screens/admin_users_screen.dart';           // ✅ النسخة الإد
 import 'screens/branches_shifts_screen.dart';      // ✅ فروع + شفتات في شاشة واحدة
 import 'screens/admin_panel_screen.dart';
 import 'screens/employee_home_screen.dart';
-import 'screens/absences_screen.dart';
 
 /* ----------------------------- Firebase init ----------------------------- */
 
@@ -85,8 +84,6 @@ class App extends StatelessWidget {
             '/branches': (_) => const BranchesShiftsScreen(),             // ✅ بدل BranchesScreen
             '/admin': (_) => const AdminPanelScreen(),
             '/employee': (_) => const EmployeeHomeScreen(),
-            '/absences': (_) => const AbsencesScreen(),
-
           },
         );
       },
