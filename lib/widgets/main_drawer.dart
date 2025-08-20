@@ -91,13 +91,11 @@ class _MainDrawerState extends State<MainDrawer> {
                     onTap: () => _open(const AttendanceReportScreen()),
                   ),
 
-                  // داخل الـ Drawer:
-ListTile(
-  leading: const Icon(Icons.report_gmailerrorred),
-  title: const Text('Absences & Anomalies'),
+                 ListTile(
+  leading: const Icon(Icons.event_busy),
+  title: const Text('الغياب'),
   onTap: () {
-    Navigator.of(context).pop();
-    Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AbsencesScreen()));
+    Navigator.of(context).pushNamed(AbsencesScreen.routeName);
   },
 ),
 
