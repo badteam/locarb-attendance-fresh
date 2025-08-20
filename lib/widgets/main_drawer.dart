@@ -91,15 +91,6 @@ class _MainDrawerState extends State<MainDrawer> {
                     onTap: () => _open(const AttendanceReportScreen()),
                   ),
 
-                 ListTile(
-  leading: const Icon(Icons.event_busy),
-  title: const Text('الغياب'),
-  onTap: () {
-    Navigator.of(context).pushNamed(AbsencesScreen.routeName);
-  },
-),
-
-
                   _section('Management'),
                   ListTile(
                     leading: const Icon(Icons.people_alt_outlined),
