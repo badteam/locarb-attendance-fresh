@@ -1,71 +1,140 @@
 // lib/screens/admin_users_screen.dart
-import 'dart:async';
 import 'dart:convert';
-import 'dart:html' as html; // للويب فقط (تحميل CSV)
-import 'package:csv/csv.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
-import 'package:flutter/material.dart';
+import 'dart:html' as html;
+
 import 'package:cloud_firestore/cloud_firestore.dart';
-
-/* =============================== ROLES =============================== */
-
-const List<String> kRoles = [
-  'employee',
-  'supervisor',
-  'branch_manager',
-  'admin',
-];
-
-String roleLabel(String r) {
-  switch (r) {
-    case 'admin':
-      return 'Admin';
-    case 'supervisor':
-      return 'Supervisor';
-    case 'branch_manager':
-      return 'Branch manager';
-    default:
-      return 'Employee';
-  }
-}
-
-/* ============================== HELPERS ============================== */
-
-double _numLike(dynamic v) {
-  if (v == null) return 0.0;
-  if (v is num) return v.toDouble();
-  if (v is String) return double.tryParse(v.trim()) ?? 0.0;
-  return 0.0;
-}
-
-Timestamp? _tsOrNull(dynamic v) => v is Timestamp ? v : null;
-
-/* ========================= ADMIN USERS SCREEN ======================== */
+import 'package:csv/csv.dart';
+import 'package:flutter/material.dart';
 
 class AdminUsersScreen extends StatefulWidget {
   const AdminUsersScreen({super.key});
+
   @override
   State<AdminUsersScreen> createState() => _AdminUsersScreenState();
 }
 
 class _AdminUsersScreenState extends State<AdminUsersScreen> {
-  // تبويب الحالة
-  String _statusTab = 'approved'; // or 'pending'
-
-  // فلاتر و بحث
-  final TextEditingController _searchCtrl = TextEditingController();
+  // ====== Filters & search ======
+  final _searchCtrl = TextEditingController();
   String _roleFilter = 'all';
   String _branchFilterId = 'all';
   String _shiftFilterId = 'all';
 
-  // أسماء الفروع والشفتات للعرض
-  final Map<String, String> _branchNames = {'all': 'All branches'};
-  final Map<String, String> _shiftNames = {'all': 'All shifts'};
+  // Static roles list (زد/قلّل حسب احتياجك)
+  static const kRoles = <String>[
+    'all',
+    'admin',
+    'manager', // مدير نظام عام
+    'branch_manager',
+    'supervisor',
+    'employee',
+  ];
 
-  @override
-  void initState() {
-    super.initState();
-    _loadRefs();
+  // ====== Caches for drop-downs ======
+  Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>> _loadBranches() async {
+    final snap =
+        await FirebaseFirestore.instance.collection('branches').orderBy('name').get();
+    return snap.docs;
+  }
+
+  Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>> _loadShifts() async {
+    final snap =
+        await FirebaseFirestore.instance.collection('shifts').orderBy('name').get();
+    return snap.docs;
+  }
+
+  // Users stream (بنصفّي لاحقًا على الذاكرة عشان ما نركّب Composite Indexات كتير)
+  Stream<List<QueryDocumentSnapshot<Map<String, dynamic>>>> _usersStream() {
+    return FirebaseFirestore.instance
+        .collection('users')
+        .orderBy('fullName', descending: false)
+        .snapshots()
+        .map((s) => s.docs);
+  }
+
+  // ====== Export CSV ======
+  Future<void> _exportUsersCsv(
+      List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) async {
+    // فلترة على الذاكرة
+    final filtered = docs.where((d) {
+      final m = d.data();
+      final role = (m['role'] ?? 'employee').toString();
+      final brId = (m['primaryBranchId'] ?? '').toString();
+      final shId = (m['assignedShiftId'] ?? '').toString();
+
+      final search = _searchCtrl.text.trim().toLowerCase();
+      final inSearch = search.isEmpty ||
+          (m['fullName']?.toString().toLowerCase().contains(search) ?? false) ||
+          (m['email']?.toString().toLowerCase().contains(search) ?? false);
+
+      final okRole = _roleFilter == 'all' || _roleFilter == role;
+      final okBr = _branchFilterId == 'all' || _branchFilterId == brId;
+      final okSh = _shiftFilterId == 'all' || _shiftFilterId == shId;
+
+      return inSearch && okRole && okBr && okSh;
+    }).toList();
+
+    final rows = <List<String>>[];
+    rows.add([
+      'UID',
+      'FullName',
+      'Email',
+      'Role',
+      'Status',
+      'BranchId',
+      'ShiftId',
+      'SalaryBase',
+      'AllowancesTotal',
+      'DeductionsTotal',
+      'Net',
+      'UpdatedAt',
+    ]);
+
+    for (final d in filtered) {
+      final m = d.data();
+
+      final base = (m['salaryBase'] as num?) ?? 0;
+
+      final allowTotal = ((m['allowances'] as List?) ?? [])
+          .map((e) => (e as Map)['amount'] as num? ?? 0)
+          .fold<num>(0, (s, e) => s + e);
+
+      final dedTotal = ((m['deductions'] as List?) ?? [])
+          .map((e) => (e as Map)['amount'] as num? ?? 0)
+          .fold<num>(0, (s, e) => s + e);
+
+      final net = base + allowTotal - dedTotal;
+
+      rows.add([
+        d.id,
+        (m['fullName'] ?? m['username'] ?? '').toString(),
+        (m['email'] ?? '').toString(),
+        (m['role'] ?? 'employee').toString(),
+        (m['status'] ?? 'pending').toString(),
+        (m['primaryBranchId'] ?? '').toString(),
+        (m['assignedShiftId'] ?? '').toString(),
+        base.toString(),
+        allowTotal.toString(),
+        dedTotal.toString(),
+        net.toString(),
+        (m['updatedAt'] is Timestamp)
+            ? (m['updatedAt'] as Timestamp).toDate().toIso8601String()
+            : '',
+      ]);
+    }
+
+    final csv = const ListToCsvConverter().convert(rows);
+    final bytes = utf8.encode(csv);
+    final blob = html.Blob([bytes], 'text/csv;charset=utf-8;');
+    final url = html.Url.createObjectUrlFromBlob(blob);
+
+    final now = DateTime.now();
+    final fileName =
+        'users_payroll_${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}.csv';
+
+    final a = html.AnchorElement(href: url)..download = fileName;
+    a.click();
+    html.Url.revokeObjectUrl(url);
   }
 
   @override
@@ -74,393 +143,385 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
     super.dispose();
   }
 
-  Future<void> _loadRefs() async {
-    try {
-      final br = await FirebaseFirestore.instance.collection('branches').get();
-      for (final d in br.docs) {
-        _branchNames[d.id] = (d.data()['name'] ?? d.id).toString();
-      }
-    } catch (_) {}
-    try {
-      final sh = await FirebaseFirestore.instance.collection('shifts').get();
-      for (final d in sh.docs) {
-        _shiftNames[d.id] = (d.data()['name'] ?? d.id).toString();
-      }
-    } catch (_) {}
-    if (mounted) setState(() {});
-  }
-
-  Query<Map<String, dynamic>> _buildUsersQuery() {
-    return FirebaseFirestore.instance
-        .collection('users')
-        .where('status', isEqualTo: _statusTab)
-        .orderBy('fullName', descending: false);
-  }
-
-  Future<void> _setStatus(String uid, String status) async {
-    await FirebaseFirestore.instance.doc('users/$uid').set(
-      {'status': status, 'updatedAt': FieldValue.serverTimestamp()},
-      SetOptions(merge: true),
-    );
-  }
-
-  Future<void> _setRole(String uid, String role) async {
-    await FirebaseFirestore.instance.doc('users/$uid').set(
-      {'role': role, 'updatedAt': FieldValue.serverTimestamp()},
-      SetOptions(merge: true),
-    );
-  }
-
-  Future<void> _toggleAllowAllBranches(String uid, bool allow) async {
-    await FirebaseFirestore.instance.doc('users/$uid').set(
-      {'allowAllBranches': allow, 'updatedAt': FieldValue.serverTimestamp()},
-      SetOptions(merge: true),
-    );
-  }
-
-  Future<void> _assignBranchDialog(String uid) async {
-    String sel = _branchFilterId == 'all' ? '' : _branchFilterId;
-    await showDialog(
-      context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          title: const Text('Assign Branch'),
-          content: DropdownButtonFormField<String>(
-            value: sel.isEmpty ? null : sel,
-            isExpanded: true,
-            items: _branchNames.entries
-                .where((e) => e.key != 'all')
-                .map((e) => DropdownMenuItem(value: e.key, child: Text(e.value)))
-                .toList(),
-            onChanged: (v) => sel = v ?? '',
-            decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-            FilledButton(
-              onPressed: () async {
-                if (sel.isEmpty) return;
-                final name = _branchNames[sel] ?? sel;
-                await FirebaseFirestore.instance.doc('users/$uid').set({
-                  'primaryBranchId': sel,
-                  'branchName': name,
-                  'updatedAt': FieldValue.serverTimestamp(),
-                }, SetOptions(merge: true));
-                if (mounted) Navigator.pop(ctx);
-              },
-              child: const Text('Save'),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Future<void> _assignShiftDialog(String uid) async {
-    String sel = _shiftFilterId == 'all' ? '' : _shiftFilterId;
-    await showDialog(
-      context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          title: const Text('Assign Shift'),
-          content: DropdownButtonFormField<String>(
-            value: sel.isEmpty ? null : sel,
-            isExpanded: true,
-            items: _shiftNames.entries
-                .where((e) => e.key != 'all')
-                .map((e) => DropdownMenuItem(value: e.key, child: Text(e.value)))
-                .toList(),
-            onChanged: (v) => sel = v ?? '',
-            decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-            FilledButton(
-              onPressed: () async {
-                if (sel.isEmpty) return;
-                final name = _shiftNames[sel] ?? sel;
-                await FirebaseFirestore.instance.doc('users/$uid').set({
-                  'assignedShiftId': sel,
-                  'shiftName': name,
-                  'updatedAt': FieldValue.serverTimestamp(),
-                }, SetOptions(merge: true));
-                if (mounted) Navigator.pop(ctx);
-              },
-              child: const Text('Save'),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Future<void> _openPayrollDialog(String uid, Map<String, dynamic> userData) async {
-    await showDialog(
-      context: context,
-      builder: (ctx) => PayrollDialog(uid: uid, userData: userData),
-    );
-  }
-
-  Future<void> _exportCsvMonthly({DateTime? monthStart}) async {
-    await exportUsersCsvMonthlyCompat(
-      usersQuery: _buildUsersQuery(),
-      roleFilter: _roleFilter,
-      branchFilterId: _branchFilterId,
-      shiftFilterId: _shiftFilterId,
-      monthStart: monthStart,
-      statusTab: _statusTab,
-      searchText: _searchCtrl.text,
-      branchNames: _branchNames,
-      shiftNames: _shiftNames,
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
-    final branches = _branchNames.entries.toList()
-      ..sort((a, b) => a.value.toLowerCase().compareTo(b.value.toLowerCase()));
-    final shifts = _shiftNames.entries.toList()
-      ..sort((a, b) => a.value.toLowerCase().compareTo(b.value.toLowerCase()));
+    final cs = Theme.of(context).colorScheme;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Users'),
-        actions: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: SegmentedButton<String>(
-              segments: const [
-                ButtonSegment(value: 'pending', label: Text('Pending')),
-                ButtonSegment(value: 'approved', label: Text('Approved')),
-              ],
-              selected: {_statusTab},
-              onSelectionChanged: (s) => setState(() => _statusTab = s.first),
-              showSelectedIcon: false,
-            ),
-          ),
-          const SizedBox(width: 8),
-        ],
-      ),
-      body: Column(
-        children: [
-          // شريط الفلاتر
-          Padding(
-            padding: const EdgeInsets.all(12),
-            child: Wrap(
-              spacing: 12,
-              runSpacing: 12,
+      appBar: AppBar(title: const Text('Users')),
+      body: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          children: [
+            // ====== Filters row ======
+            Wrap(
+              runSpacing: 8,
+              spacing: 8,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 360),
+                SizedBox(
+                  width: 340,
                   child: TextField(
                     controller: _searchCtrl,
-                    decoration: InputDecoration(
-                      prefixIcon: const Icon(Icons.search),
-                      hintText: 'Search by name or email',
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                      isDense: true,
-                    ),
                     onChanged: (_) => setState(() {}),
+                    decoration: const InputDecoration(
+                      prefixIcon: Icon(Icons.search),
+                      hintText: 'Search by name or email',
+                      border: OutlineInputBorder(),
+                    ),
                   ),
                 ),
-                _FilterBox(
-                  label: 'Role',
-                  child: DropdownButton<String>(
+
+                // Role
+                SizedBox(
+                  width: 200,
+                  child: DropdownButtonFormField<String>(
                     value: _roleFilter,
-                    items: const [
-                      DropdownMenuItem(value: 'all', child: Text('All roles')),
-                      DropdownMenuItem(value: 'employee', child: Text('Employee')),
-                      DropdownMenuItem(value: 'supervisor', child: Text('Supervisor')),
-                      DropdownMenuItem(value: 'branch_manager', child: Text('Branch manager')),
-                      DropdownMenuItem(value: 'admin', child: Text('Admin')),
-                    ],
+                    items: kRoles
+                        .map((r) => DropdownMenuItem(
+                              value: r,
+                              child: Text(r == 'all' ? 'All roles' : r),
+                            ))
+                        .toList(),
                     onChanged: (v) => setState(() => _roleFilter = v ?? 'all'),
+                    decoration: const InputDecoration(
+                      labelText: 'Role',
+                      border: OutlineInputBorder(),
+                    ),
                   ),
                 ),
-                _FilterBox(
-                  label: 'Branch',
-                  child: DropdownButton<String>(
-                    value: _branchFilterId,
-                    items: branches.map((e) => DropdownMenuItem(value: e.key, child: Text(e.value))).toList(),
-                    onChanged: (v) => setState(() => _branchFilterId = v ?? 'all'),
-                  ),
-                ),
-                _FilterBox(
-                  label: 'Shift',
-                  child: DropdownButton<String>(
-                    value: _shiftFilterId,
-                    items: shifts.map((e) => DropdownMenuItem(value: e.key, child: Text(e.value))).toList(),
-                    onChanged: (v) => setState(() => _shiftFilterId = v ?? 'all'),
-                  ),
-                ),
-                FilledButton.icon(
-                  onPressed: () => _exportCsvMonthly(),
-                  icon: const Icon(Icons.download),
-                  label: const Text('Export CSV (Excel)'),
-                ),
-              ],
-            ),
-          ),
 
-          const Divider(height: 0),
-
-          // قائمة المستخدمين
-          Expanded(
-            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: _buildUsersQuery().snapshots(),
-              builder: (context, snap) {
-                if (snap.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                if (!snap.hasData) return const Center(child: Text('No data'));
-
-                // فلترة إضافية بالذاكرة
-                final q = _searchCtrl.text.trim().toLowerCase();
-                final docs = snap.data!.docs.where((d) {
-                  final m = d.data();
-                  final role = (m['role'] ?? 'employee').toString();
-                  final brId = (m['primaryBranchId'] ?? '').toString();
-                  final shId = (m['assignedShiftId'] ?? '').toString();
-                  final roleOk = _roleFilter == 'all' || role == _roleFilter;
-                  final brOk = _branchFilterId == 'all' || brId == _branchFilterId;
-                  final shOk = _shiftFilterId == 'all' || shId == _shiftFilterId;
-                  final matches = q.isEmpty
-                      ? true
-                      : ((m['fullName'] ?? '').toString().toLowerCase().contains(q) ||
-                          (m['email'] ?? '').toString().toLowerCase().contains(q) ||
-                          (m['username'] ?? '').toString().toLowerCase().contains(q));
-                  return roleOk && brOk && shOk && matches;
-                }).toList();
-
-                if (docs.isEmpty) return const Center(child: Text('No users match these filters.'));
-
-                return ListView.separated(
-                  padding: const EdgeInsets.all(12),
-                  itemCount: docs.length,
-                  separatorBuilder: (_, __) => const SizedBox(height: 8),
-                  itemBuilder: (_, i) {
-                    final u = docs[i];
-                    final m = u.data();
-
-                    final name = (m['fullName'] ?? m['username'] ?? m['email'] ?? '').toString();
-                    final email = (m['email'] ?? '').toString();
-                    final role = (m['role'] ?? 'employee').toString();
-                    final status = (m['status'] ?? 'pending').toString();
-
-                    final brId = (m['primaryBranchId'] ?? '').toString();
-                    final shId = (m['assignedShiftId'] ?? '').toString();
-                    final brName = (m['branchName'] ?? (_branchNames[brId] ?? (brId.isEmpty ? 'No branch' : brId))).toString();
-                    final shName = (m['shiftName'] ?? (_shiftNames[shId] ?? (shId.isEmpty ? 'No shift' : shId))).toString();
-
-                    final allowAny = (m['allowAllBranches'] ?? false) == true;
-
-                    return Card(
-                      elevation: 0,
-                      child: Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            // الرأس: الاسم/الإيميل والحالة
-                            Row(
-                              children: [
-                                CircleAvatar(child: Text(name.isEmpty ? '?' : name[0].toUpperCase())),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(name, style: Theme.of(context).textTheme.titleMedium),
-                                      if (email.isNotEmpty)
-                                        Text(email, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey)),
-                                    ],
-                                  ),
-                                ),
-                                Chip(
-                                  avatar: Icon(
-                                    status == 'approved' ? Icons.verified : Icons.hourglass_bottom,
-                                    size: 18,
-                                    color: status == 'approved' ? Colors.green : Colors.orange,
-                                  ),
-                                  label: Text(status),
-                                  backgroundColor: status == 'approved'
-                                      ? Colors.green.withOpacity(.12)
-                                      : Colors.orange.withOpacity(.12),
-                                  side: BorderSide.none,
-                                ),
-                              ],
-                            ),
-
-                            const SizedBox(height: 10),
-
-                            // معلومات الفرع والشفت + أزرار التعيين
-                            Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
-                              crossAxisAlignment: WrapCrossAlignment.center,
-                              children: [
-                                _InfoChip(icon: Icons.store, label: brName),
-                                _InfoChip(icon: Icons.access_time, label: shName),
-
-                                OutlinedButton.icon(
-                                  onPressed: () => _assignBranchDialog(u.id),
-                                  icon: const Icon(Icons.store_mall_directory_outlined),
-                                  label: const Text('Assign Branch'),
-                                ),
-                                OutlinedButton.icon(
-                                  onPressed: () => _assignShiftDialog(u.id),
-                                  icon: const Icon(Icons.access_time),
-                                  label: const Text('Assign Shift'),
-                                ),
-                                Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    const Text('Allow any branch'),
-                                    const SizedBox(width: 8),
-                                    Switch(
-                                      value: allowAny,
-                                      onChanged: (v) => _toggleAllowAllBranches(u.id, v),
-                                    ),
-                                  ],
-                                ),
-                              ],
-                            ),
-
-                            const SizedBox(height: 10),
-
-                            // أكشنز الحالة + الدور + الباي رول
-                            Row(
-                              children: [
-                                OutlinedButton(
-                                  onPressed: () {
-                                    final next = status == 'approved' ? 'pending' : 'approved';
-                                    _setStatus(u.id, next);
-                                  },
-                                  child: Text(status == 'approved' ? 'Mark Pending' : 'Approve'),
-                                ),
-                                const SizedBox(width: 12),
-                                DropdownButton<String>(
-                                  value: kRoles.contains(role) ? role : 'employee',
-                                  items: kRoles.map((r) => DropdownMenuItem(value: r, child: Text(roleLabel(r)))).toList(),
-                                  onChanged: (v) { if (v != null) _setRole(u.id, v); },
-                                ),
-                                const Spacer(),
-                                OutlinedButton.icon(
-                                  onPressed: () => _openPayrollDialog(u.id, m),
-                                  icon: const Icon(Icons.payments),
-                                  label: const Text('Edit Payroll'),
-                                ),
-                              ],
-                            ),
-                          ],
+                // Branch
+                FutureBuilder(
+                  future: _loadBranches(),
+                  builder: (context, snapshot) {
+                    final items = <DropdownMenuItem<String>>[
+                      const DropdownMenuItem(
+                        value: 'all',
+                        child: Text('All branches'),
+                      )
+                    ];
+                    if (snapshot.hasData) {
+                      items.addAll(snapshot.data!
+                          .map((d) => DropdownMenuItem(
+                                value: d.id,
+                                child: Text((d.data()['name'] ?? '').toString()),
+                              )));
+                    }
+                    return SizedBox(
+                      width: 220,
+                      child: DropdownButtonFormField<String>(
+                        value: _branchFilterId,
+                        items: items,
+                        onChanged: (v) =>
+                            setState(() => _branchFilterId = v ?? 'all'),
+                        decoration: const InputDecoration(
+                          labelText: 'Branch',
+                          border: OutlineInputBorder(),
                         ),
                       ),
                     );
                   },
-                );
-              },
+                ),
+
+                // Shift
+                FutureBuilder(
+                  future: _loadShifts(),
+                  builder: (context, snapshot) {
+                    final items = <DropdownMenuItem<String>>[
+                      const DropdownMenuItem(
+                        value: 'all',
+                        child: Text('All shifts'),
+                      )
+                    ];
+                    if (snapshot.hasData) {
+                      items.addAll(snapshot.data!
+                          .map((d) => DropdownMenuItem(
+                                value: d.id,
+                                child: Text((d.data()['name'] ?? '').toString()),
+                              )));
+                    }
+                    return SizedBox(
+                      width: 220,
+                      child: DropdownButtonFormField<String>(
+                        value: _shiftFilterId,
+                        items: items,
+                        onChanged: (v) =>
+                            setState(() => _shiftFilterId = v ?? 'all'),
+                        decoration: const InputDecoration(
+                          labelText: 'Shift',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+
+                // Export
+                StreamBuilder(
+                  stream: _usersStream(),
+                  builder: (context, snapshot) {
+                    final can = snapshot.hasData && snapshot.data!.isNotEmpty;
+                    return FilledButton.icon(
+                      onPressed: can
+                          ? () => _exportUsersCsv(snapshot.data!)
+                          : null,
+                      icon: const Icon(Icons.download),
+                      label: const Text('Export CSV (Excel)'),
+                    );
+                  },
+                ),
+              ],
             ),
+
+            const SizedBox(height: 12),
+
+            // ====== Users list ======
+            Expanded(
+              child: StreamBuilder<
+                  List<QueryDocumentSnapshot<Map<String, dynamic>>>>(
+                stream: _usersStream(),
+                builder: (context, snap) {
+                  if (snap.connectionState == ConnectionState.waiting) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  var docs = snap.data ?? [];
+
+                  // Apply search & filters
+                  final search = _searchCtrl.text.trim().toLowerCase();
+                  docs = docs.where((d) {
+                    final m = d.data();
+                    final role = (m['role'] ?? 'employee').toString();
+                    final brId = (m['primaryBranchId'] ?? '').toString();
+                    final shId = (m['assignedShiftId'] ?? '').toString();
+
+                    final inSearch = search.isEmpty ||
+                        (m['fullName']?.toString().toLowerCase().contains(search) ??
+                            false) ||
+                        (m['email']?.toString().toLowerCase().contains(search) ??
+                            false);
+
+                    final okRole = _roleFilter == 'all' || _roleFilter == role;
+                    final okBr =
+                        _branchFilterId == 'all' || _branchFilterId == brId;
+                    final okSh =
+                        _shiftFilterId == 'all' || _shiftFilterId == shId;
+
+                    return inSearch && okRole && okBr && okSh;
+                  }).toList();
+
+                  if (docs.isEmpty) {
+                    return Center(
+                      child: Text(
+                        'No users found',
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                    );
+                  }
+
+                  return ListView.separated(
+                    itemCount: docs.length,
+                    separatorBuilder: (_, __) => Divider(color: cs.outline),
+                    itemBuilder: (context, i) {
+                      final d = docs[i];
+                      final m = d.data();
+                      return _UserCard(
+                        uid: d.id,
+                        data: m,
+                        loadBranches: _loadBranches,
+                        loadShifts: _loadShifts,
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ===================================================================
+// User Card + inline actions (assign branch/shift, allowAnyBranch, edit payroll)
+// ===================================================================
+class _UserCard extends StatelessWidget {
+  final String uid;
+  final Map<String, dynamic> data;
+  final Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>> Function()
+      loadBranches;
+  final Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>> Function()
+      loadShifts;
+
+  const _UserCard({
+    required this.uid,
+    required this.data,
+    required this.loadBranches,
+    required this.loadShifts,
+  });
+
+  Future<void> _assign({
+    String? branchId,
+    String? shiftId,
+    bool? allowAnyBranch,
+  }) async {
+    final updates = <String, dynamic>{'updatedAt': FieldValue.serverTimestamp()};
+    if (branchId != null) updates['primaryBranchId'] = branchId;
+    if (shiftId != null) updates['assignedShiftId'] = shiftId;
+    if (allowAnyBranch != null) updates['allowAnyBranch'] = allowAnyBranch;
+
+    await FirebaseFirestore.instance
+        .collection('users')
+        .doc(uid)
+        .set(updates, SetOptions(merge: true));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final name = (data['fullName'] ?? data['username'] ?? '').toString();
+    final email = (data['email'] ?? '').toString();
+    final role = (data['role'] ?? 'employee').toString();
+    final status = (data['status'] ?? 'pending').toString();
+    final primaryBranchId = (data['primaryBranchId'] ?? '').toString();
+    final assignedShiftId = (data['assignedShiftId'] ?? '').toString();
+    final allowAnyBranch = (data['allowAnyBranch'] as bool?) ?? false;
+
+    final cs = Theme.of(context).colorScheme;
+
+    return ListTile(
+      title: Text(name, style: const TextStyle(fontWeight: FontWeight.w600)),
+      subtitle: Text(email),
+      trailing: Wrap(
+        crossAxisAlignment: WrapCrossAlignment.center,
+        spacing: 8,
+        children: [
+          // Role chip
+          Chip(
+            label: Text(role),
+            avatar: const Icon(Icons.badge, size: 18),
+          ),
+          // Status chip
+          Chip(
+            label: Text(status),
+            avatar: const Icon(Icons.verified, size: 18),
+            backgroundColor:
+                status == 'approved' ? cs.secondaryContainer : cs.surfaceVariant,
+          ),
+          // Edit payroll
+          OutlinedButton.icon(
+            onPressed: () async {
+              final res = await showDialog(
+                context: context,
+                builder: (_) => _PayrollDialogInline(uid: uid, user: data),
+              );
+              if (res == true && context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Payroll updated')),
+                );
+              }
+            },
+            icon: const Icon(Icons.payments_outlined),
+            label: const Text('Edit Payroll'),
+          ),
+        ],
+      ),
+      // Assign row under title
+      isThreeLine: true,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      subtitleTextStyle: Theme.of(context).textTheme.bodyMedium,
+      dense: false,
+      // Bottom controls (branch / shift / allowAnyBranch)
+      // نستخدم Column عشان نظهر سطر تعيين واضح
+      // ignore: prefer_const_constructors
+      // (already set subtitle above; نبني أدوات أسفل)
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(email),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              // Branch selector
+              FutureBuilder(
+                future: loadBranches(),
+                builder: (context, snapshot) {
+                  final items = <DropdownMenuItem<String>>[
+                    const DropdownMenuItem(
+                      value: '',
+                      child: Text('No branch'),
+                    )
+                  ];
+                  if (snapshot.hasData) {
+                    items.addAll(snapshot.data!
+                        .map((d) => DropdownMenuItem(
+                              value: d.id,
+                              child: Text((d.data()['name'] ?? '').toString()),
+                            )));
+                  }
+                  return SizedBox(
+                    width: 220,
+                    child: DropdownButtonFormField<String>(
+                      value: primaryBranchId,
+                      items: items,
+                      onChanged: (v) => _assign(branchId: v),
+                      decoration: const InputDecoration(
+                        prefixIcon: Icon(Icons.store_outlined),
+                        border: OutlineInputBorder(),
+                        labelText: 'Branch',
+                      ),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(width: 8),
+
+              // Shift selector
+              FutureBuilder(
+                future: loadShifts(),
+                builder: (context, snapshot) {
+                  final items = <DropdownMenuItem<String>>[
+                    const DropdownMenuItem(
+                      value: '',
+                      child: Text('No shift'),
+                    )
+                  ];
+                  if (snapshot.hasData) {
+                    items.addAll(snapshot.data!
+                        .map((d) => DropdownMenuItem(
+                              value: d.id,
+                              child: Text((d.data()['name'] ?? '').toString()),
+                            )));
+                  }
+                  return SizedBox(
+                    width: 220,
+                    child: DropdownButtonFormField<String>(
+                      value: assignedShiftId,
+                      items: items,
+                      onChanged: (v) => _assign(shiftId: v),
+                      decoration: const InputDecoration(
+                        prefixIcon: Icon(Icons.schedule_outlined),
+                        border: OutlineInputBorder(),
+                        labelText: 'Shift',
+                      ),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(width: 8),
+
+              // Allow from any branch
+              Row(
+                children: [
+                  const Text('Allow any branch'),
+                  const SizedBox(width: 6),
+                  Switch(
+                    value: allowAnyBranch,
+                    onChanged: (v) => _assign(allowAnyBranch: v),
+                  ),
+                ],
+              ),
+            ],
           ),
         ],
       ),
@@ -468,380 +529,321 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
   }
 }
 
-/* ============================== SMALL WIDGETS ============================== */
-
-class _FilterBox extends StatelessWidget {
-  final String label;
-  final Widget child;
-  const _FilterBox({required this.label, required this.child});
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(label, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey)),
-        const SizedBox(height: 4),
-        DecoratedBox(
-          decoration: BoxDecoration(
-            border: Border.all(color: Colors.grey.withOpacity(.4)),
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8), child: child),
-        ),
-      ],
-    );
-  }
-}
-
-class _InfoChip extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  const _InfoChip({required this.icon, required this.label});
-  @override
-  Widget build(BuildContext context) {
-    return Chip(avatar: Icon(icon, size: 18), label: Text(label), side: BorderSide(color: Colors.grey.withOpacity(.25)));
-  }
-}
-
-/* ============================== PAYROLL DIALOG ============================= */
-
-class PayrollDialog extends StatefulWidget {
+// ===================================================================
+// Inline Payroll Dialog (مدمج داخل نفس الملف)
+// ===================================================================
+class _PayrollDialogInline extends StatefulWidget {
   final String uid;
-  final Map<String, dynamic> userData;
-  const PayrollDialog({super.key, required this.uid, required this.userData});
+  final Map<String, dynamic> user;
+  const _PayrollDialogInline({required this.uid, required this.user});
+
   @override
-  State<PayrollDialog> createState() => _PayrollDialogState();
+  State<_PayrollDialogInline> createState() => _PayrollDialogInlineState();
 }
 
-class _PayrollDialogState extends State<PayrollDialog> {
-  late final TextEditingController _baseSalaryCtrl;
-  String _trxType = 'bonus'; // bonus | allowance | deduction
-  final TextEditingController _amountCtrl = TextEditingController();
-  DateTime _trxDate = DateTime.now();
+class _PayrollDialogInlineState extends State<_PayrollDialogInline> {
+  late final TextEditingController _baseCtrl;
+  late final TextEditingController _otRateCtrl;
+
+  final _allowNote = TextEditingController();
+  final _allowAmount = TextEditingController();
+  final _dedNote = TextEditingController();
+  final _dedAmount = TextEditingController();
+
+  List<Map<String, dynamic>> _allowances = [];
+  List<Map<String, dynamic>> _deductions = [];
+
+  num get base =>
+      num.tryParse(_baseCtrl.text.trim()) ??
+      (widget.user['salaryBase'] as num? ?? 0);
+
+  num get otRate => num.tryParse(_otRateCtrl.text.trim()) ??
+      (widget.user['leaveBalance']?['overtimeRate'] as num? ?? 0);
+
+  num get allowTotal =>
+      _allowances.fold<num>(0, (s, e) => s + ((e['amount'] as num?) ?? 0));
+  num get dedTotal =>
+      _deductions.fold<num>(0, (s, e) => s + ((e['amount'] as num?) ?? 0));
+  num get net => base + allowTotal - dedTotal;
 
   @override
   void initState() {
     super.initState();
-    // نحاول نقرأ أي اسم شائع للراتب الأساسي
-    final base = _numLike(widget.userData['baseSalary']) +
-        _numLike(widget.userData['base_salary']) +
-        _numLike(widget.userData['salary']) +
-        _numLike(widget.userData['monthlySalary']);
-    _baseSalaryCtrl = TextEditingController(text: base == 0 ? '' : base.toStringAsFixed(2));
+    _baseCtrl =
+        TextEditingController(text: ((widget.user['salaryBase'] as num?) ?? 0).toString());
+    _otRateCtrl = TextEditingController(
+        text: ((widget.user['leaveBalance']?['overtimeRate'] as num?) ?? 0).toString());
+
+    _allowances = (widget.user['allowances'] as List?)
+            ?.cast<Map>()
+            .map((m) => Map<String, dynamic>.from(m))
+            .toList() ??
+        [];
+    _deductions = (widget.user['deductions'] as List?)
+            ?.cast<Map>()
+            .map((m) => Map<String, dynamic>.from(m))
+            .toList() ??
+        [];
   }
 
   @override
   void dispose() {
-    _baseSalaryCtrl.dispose();
-    _amountCtrl.dispose();
+    _baseCtrl.dispose();
+    _otRateCtrl.dispose();
+    _allowNote.dispose();
+    _allowAmount.dispose();
+    _dedNote.dispose();
+    _dedAmount.dispose();
     super.dispose();
   }
 
-  Future<void> _saveBaseSalary() async {
-    final v = _numLike(_baseSalaryCtrl.text);
-    await FirebaseFirestore.instance.doc('users/${widget.uid}').set(
-      {'baseSalary': v, 'updatedAt': FieldValue.serverTimestamp()},
-      SetOptions(merge: true),
-    );
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Base salary saved')));
-      setState(() {});
-    }
-  }
-
-  Future<void> _addTransaction() async {
-    final amt = _numLike(_amountCtrl.text);
-    if (amt == 0) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Amount must be non-zero')));
-      return;
-    }
-
-    // نضيف في subcollection (payrollTransactions)
-    await FirebaseFirestore.instance
-        .collection('users').doc(widget.uid)
-        .collection('payrollTransactions')
-        .add({
-      'type': _trxType, // bonus | allowance | deduction
-      'amount': amt,
-      'timestamp': Timestamp.fromDate(DateTime(_trxDate.year, _trxDate.month, _trxDate.day)),
-      'createdAt': FieldValue.serverTimestamp(),
-    });
-
-    // نحدّث مجاميع سريعة في user document (اختياري لو عندك)
-    await FirebaseFirestore.instance.doc('users/${widget.uid}').set({
-      if (_trxType == 'bonus' || _trxType == 'allowance') 'bonusesTotal': FieldValue.increment(amt),
-      if (_trxType == 'deduction') 'deductionsTotal': FieldValue.increment(amt),
+  Future<void> _saveBasics() async {
+    await FirebaseFirestore.instance.collection('users').doc(widget.uid).set({
+      'salaryBase': num.tryParse(_baseCtrl.text.trim()) ?? 0,
+      'leaveBalance': {
+        ...(widget.user['leaveBalance'] as Map<String, dynamic>? ?? {}),
+        'overtimeRate': num.tryParse(_otRateCtrl.text.trim()) ?? 0,
+      },
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
 
-    _amountCtrl.clear();
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Transaction added')));
-      setState(() {});
-    }
+    if (mounted) Navigator.of(context).pop(true);
+  }
+
+  Future<void> _addAllowance() async {
+    final note = _allowNote.text.trim();
+    final amt = num.tryParse(_allowAmount.text.trim());
+    if (note.isEmpty || amt == null) return;
+
+    final item = {'note': note, 'amount': amt, 'ts': FieldValue.serverTimestamp()};
+
+    await FirebaseFirestore.instance.collection('users').doc(widget.uid).set({
+      'allowances': FieldValue.arrayUnion([item]),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+    setState(() {
+      _allowances.add({'note': note, 'amount': amt, 'ts': DateTime.now()});
+      _allowNote.clear();
+      _allowAmount.clear();
+    });
+  }
+
+  Future<void> _addDeduction() async {
+    final note = _dedNote.text.trim();
+    final amt = num.tryParse(_dedAmount.text.trim());
+    if (note.isEmpty || amt == null) return;
+
+    final item = {'note': note, 'amount': amt, 'ts': FieldValue.serverTimestamp()};
+
+    await FirebaseFirestore.instance.collection('users').doc(widget.uid).set({
+      'deductions': FieldValue.arrayUnion([item]),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+    setState(() {
+      _deductions.add({'note': note, 'amount': amt, 'ts': DateTime.now()});
+      _dedNote.clear();
+      _dedAmount.clear();
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    // نعرض آخر الحركات من payrollTransactions
-    final trxStream = FirebaseFirestore.instance
-        .collection('users').doc(widget.uid)
-        .collection('payrollTransactions')
-        .orderBy('timestamp', descending: true)
-        .limit(12)
-        .snapshots();
+    return Dialog(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 720),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: SingleChildScrollView(
+            child: Column(
+              children: [
+                Text('Edit Payroll',
+                    style: Theme.of(context).textTheme.titleLarge),
+                const SizedBox(height: 12),
 
-    return AlertDialog(
-      title: const Text('Payroll'),
-      content: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 520),
-        child: SingleChildScrollView(
-          child: Column(
-            children: [
-              // الراتب الأساسي
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _baseSalaryCtrl,
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      decoration: const InputDecoration(
-                        labelText: 'Base salary',
-                        border: OutlineInputBorder(),
-                        isDense: true,
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _baseCtrl,
+                        keyboardType:
+                            const TextInputType.numberWithOptions(decimal: true),
+                        decoration: const InputDecoration(
+                          labelText: 'Base salary',
+                          border: OutlineInputBorder(),
+                        ),
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  FilledButton(onPressed: _saveBaseSalary, child: const Text('Save')),
-                ],
-              ),
-              const SizedBox(height: 16),
-
-              // إضافة حركة
-              Align(alignment: Alignment.centerLeft, child: Text('Add transaction', style: Theme.of(context).textTheme.titleMedium)),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  DropdownButton<String>(
-                    value: _trxType,
-                    items: const [
-                      DropdownMenuItem(value: 'bonus', child: Text('Bonus')),
-                      DropdownMenuItem(value: 'allowance', child: Text('Allowance')),
-                      DropdownMenuItem(value: 'deduction', child: Text('Deduction')),
-                    ],
-                    onChanged: (v) => setState(() => _trxType = v ?? 'bonus'),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: TextField(
-                      controller: _amountCtrl,
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      decoration: const InputDecoration(labelText: 'Amount', border: OutlineInputBorder(), isDense: true),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  OutlinedButton(
-                    onPressed: () async {
-                      final picked = await showDatePicker(
-                        context: context,
-                        initialDate: _trxDate,
-                        firstDate: DateTime(2020, 1, 1),
-                        lastDate: DateTime(2100, 12, 31),
-                      );
-                      if (picked != null) setState(() => _trxDate = picked);
-                    },
-                    child: Text('${_trxDate.year}-${_trxDate.month.toString().padLeft(2, "0")}-${_trxDate.day.toString().padLeft(2, "0")}'),
-                  ),
-                  const SizedBox(width: 8),
-                  FilledButton.icon(onPressed: _addTransaction, icon: const Icon(Icons.add), label: const Text('Add')),
-                ],
-              ),
-              const SizedBox(height: 16),
-
-              // آخر الحركات
-              Align(alignment: Alignment.centerLeft, child: Text('Recent transactions', style: Theme.of(context).textTheme.titleMedium)),
-              const SizedBox(height: 8),
-              StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                stream: trxStream,
-                builder: (context, snap) {
-                  if (snap.connectionState == ConnectionState.waiting) {
-                    return const Padding(padding: EdgeInsets.all(16), child: LinearProgressIndicator());
-                  }
-                  final docs = snap.data?.docs ?? [];
-                  if (docs.isEmpty) return const Padding(padding: EdgeInsets.all(8), child: Text('No transactions'));
-                  return Column(
-                    children: docs.map((d) {
-                      final m = d.data();
-                      final t = (m['type'] ?? '').toString();
-                      final a = _numLike(m['amount']);
-                      final dt = _tsOrNull(m['timestamp'])?.toDate() ?? _tsOrNull(m['createdAt'])?.toDate() ?? DateTime.now();
-                      return ListTile(
-                        dense: true,
-                        title: Text('$t  •  ${a.toStringAsFixed(2)}'),
-                        subtitle: Text('${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}'),
-                        trailing: IconButton(
-                          tooltip: 'Delete',
-                          icon: const Icon(Icons.delete_outline),
-                          onPressed: () async => d.reference.delete(),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: TextField(
+                        controller: _otRateCtrl,
+                        keyboardType:
+                            const TextInputType.numberWithOptions(decimal: true),
+                        decoration: const InputDecoration(
+                          labelText: 'Overtime rate',
+                          border: OutlineInputBorder(),
                         ),
-                      );
-                    }).toList(),
-                  );
-                },
-              ),
-            ],
+                      ),
+                    ),
+                  ],
+                ),
+
+                const SizedBox(height: 12),
+
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: _section(
+                        title: 'Allowances',
+                        color: Colors.green.shade50,
+                        child: Column(
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: TextField(
+                                    controller: _allowNote,
+                                    decoration:
+                                        const InputDecoration(labelText: 'Note'),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                SizedBox(
+                                  width: 120,
+                                  child: TextField(
+                                    controller: _allowAmount,
+                                    keyboardType:
+                                        const TextInputType.numberWithOptions(
+                                            decimal: true),
+                                    decoration: const InputDecoration(
+                                        labelText: 'Amount'),
+                                  ),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.add),
+                                  onPressed: _addAllowance,
+                                )
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            ..._allowances.map((e) => ListTile(
+                                  dense: true,
+                                  title: Text(e['note']?.toString() ?? ''),
+                                  trailing:
+                                      Text((e['amount'] ?? 0).toString()),
+                                )),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _section(
+                        title: 'Deductions',
+                        color: Colors.red.shade50,
+                        child: Column(
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: TextField(
+                                    controller: _dedNote,
+                                    decoration:
+                                        const InputDecoration(labelText: 'Note'),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                SizedBox(
+                                  width: 120,
+                                  child: TextField(
+                                    controller: _dedAmount,
+                                    keyboardType:
+                                        const TextInputType.numberWithOptions(
+                                            decimal: true),
+                                    decoration: const InputDecoration(
+                                        labelText: 'Amount'),
+                                  ),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.remove_circle_outline),
+                                  onPressed: _addDeduction,
+                                )
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            ..._deductions.map((e) => ListTile(
+                                  dense: true,
+                                  title: Text(e['note']?.toString() ?? ''),
+                                  trailing:
+                                      Text((e['amount'] ?? 0).toString()),
+                                )),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+
+                const SizedBox(height: 12),
+
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text('Allowances: $allowTotal'),
+                      Text('Deductions: $dedTotal'),
+                      const SizedBox(height: 4),
+                      Text('Net: $net',
+                          style: Theme.of(context)
+                              .textTheme
+                              .titleMedium
+                              ?.copyWith(fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                ),
+
+                const SizedBox(height: 12),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        child: const Text('Close')),
+                    const SizedBox(width: 8),
+                    FilledButton(
+                      onPressed: _saveBasics,
+                      child: const Text('Save'),
+                    ),
+                  ],
+                )
+              ],
+            ),
           ),
         ),
       ),
-      actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close'))],
     );
   }
-}
 
-/* ======================== CSV EXPORT (COMPATIBLE) ======================== */
-
-Future<void> exportUsersCsvMonthlyCompat({
-  required Query<Map<String, dynamic>> usersQuery,
-  required String roleFilter,
-  required String branchFilterId,
-  required String shiftFilterId,
-  required String statusTab,
-  required String searchText,
-  required Map<String, String> branchNames,
-  required Map<String, String> shiftNames,
-  DateTime? monthStart,
-}) async {
-  final now = DateTime.now();
-  final start = monthStart ?? DateTime(now.year, now.month, 1);
-  final end = DateTime(start.year, start.month + 1, 1).subtract(const Duration(microseconds: 1));
-
-  final snap = await usersQuery.get();
-  var users = snap.docs;
-
-  // فلترة إضافية
-  final q = searchText.trim().toLowerCase();
-  users = users.where((u) {
-    final m = u.data();
-    final role = (m['role'] ?? 'employee').toString();
-    final brId = (m['primaryBranchId'] ?? '').toString();
-    final shId = (m['assignedShiftId'] ?? '').toString();
-
-    final roleOk = roleFilter == 'all' || role == roleFilter;
-    final brOk = branchFilterId == 'all' || brId == branchFilterId;
-    final shOk = shiftFilterId == 'all' || shId == shiftFilterId;
-
-    final matches = q.isEmpty
-        ? true
-        : ((m['fullName'] ?? '').toString().toLowerCase().contains(q) ||
-            (m['email'] ?? '').toString().toLowerCase().contains(q) ||
-            (m['username'] ?? '').toString().toLowerCase().contains(q));
-
-    return roleOk && brOk && shOk && matches;
-  }).toList();
-
-  final rows = <List<String>>[
-    [
-      'Name','Email','Role','Status','Branch','Shift',
-      'Base Salary','Bonuses/Allowances (month)','Deductions (month)','Net Salary (month)',
-      'UID','Branch ID','Shift ID','Month',
-    ],
-  ];
-
-  for (final u in users) {
-    final m = u.data();
-
-    final uid   = u.id;
-    final name  = (m['fullName'] ?? m['username'] ?? m['email'] ?? '').toString();
-    final email = (m['email'] ?? '').toString();
-    final role  = (m['role'] ?? 'employee').toString();
-    final stat  = (m['status'] ?? 'pending').toString();
-
-    final brId  = (m['primaryBranchId'] ?? '').toString();
-    final shId  = (m['assignedShiftId'] ?? '').toString();
-
-    final brNm  = (m['branchName'] ?? (branchNames[brId] ?? (brId.isEmpty ? 'No branch' : brId))).toString();
-    final shNm  = (m['shiftName']  ?? (shiftNames[shId]  ?? (shId.isEmpty ? 'No shift'  : shId ))).toString();
-
-    // Base salary من أي حقل شائع
-    double baseSalary = 0;
-    baseSalary += _numLike(m['baseSalary']);
-    baseSalary += _numLike(m['base_salary']);
-    baseSalary += _numLike(m['salary']);
-    baseSalary += _numLike(m['monthlySalary']);
-
-    // مجاميع محفوظة مباشرة (aliases شائعة)
-    double bonusesFixed = 0;
-    for (final key in [
-      'bonus','bonuses','bonusTotal','bonusesTotal',
-      'allowance','allowances','allowanceTotal','allowancesTotal',
-      'overtime','overtimeAmount'
-    ]) {
-      bonusesFixed += _numLike(m[key]);
-    }
-
-    double deductionsFixed = 0;
-    for (final key in [
-      'deduction','deductions','deductionTotal','deductionsTotal',
-      'penalty','penalties','penaltiesTotal'
-    ]) {
-      deductionsFixed += _numLike(m[key]);
-    }
-
-    // حركات شهرية من payroll أو payrollTransactions
-    double bonusesVar = 0, deductionsVar = 0;
-    Future<void> readSubCol(String sub) async {
-      try {
-        // نقرأ عدد معقول ونرشّح بالتاريخ محليًا لدعم أسماء تاريخ مختلفة
-        final col = FirebaseFirestore.instance.collection('users').doc(uid).collection(sub);
-        final docs1 = await col.orderBy('date', descending: true).limit(500).get();
-        final docs2 = await col.orderBy('createdAt', descending: true).limit(500).get();
-
-        final all = <QueryDocumentSnapshot<Map<String, dynamic>>>{}
-          ..addAll(docs1.docs)..addAll(docs2.docs);
-
-        for (final d in all) {
-          final mm = d.data();
-          final t = (mm['type'] ?? '').toString().toLowerCase();
-          final amount = _numLike(mm['amount']);
-          final ts = _tsOrNull(mm['date']) ?? _tsOrNull(mm['txnDate']) ?? _tsOrNull(mm['timestamp']) ?? _tsOrNull(mm['createdAt']);
-          final dt = ts?.toDate();
-          if (dt == null) continue;
-          if (dt.isBefore(start) || dt.isAfter(end)) continue;
-
-          if (t == 'bonus' || t == 'allowance') {
-            bonusesVar += amount;
-          } else if (t == 'deduction') {
-            deductionsVar += amount;
-          }
-        }
-      } catch (_) {}
-    }
-
-    await readSubCol('payroll');
-    await readSubCol('payrollTransactions');
-
-    final bonuses = bonusesFixed + bonusesVar;
-    final deductions = deductionsFixed + deductionsVar;
-    final net = (baseSalary + bonuses) - deductions;
-
-    rows.add([
-      name, email, role, stat, brNm, shNm,
-      baseSalary.toStringAsFixed(2),
-      bonuses.toStringAsFixed(2),
-      deductions.toStringAsFixed(2),
-      net.toStringAsFixed(2),
-      uid, brId, shId,
-      '${start.year}-${start.month.toString().padLeft(2, "0")}',
-    ]);
+  Widget _section({required String title, required Widget child, Color? color}) {
+    return Card(
+      color: color,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title,
+                style:
+                    const TextStyle(fontWeight: FontWeight.w600, fontSize: 16)),
+            const SizedBox(height: 8),
+            child,
+          ],
+        ),
+      ),
+    );
   }
-
-  if (!kIsWeb) return; // التصدير للويب هنا فقط
-  final csv = const ListToCsvConverter().convert(rows);
-  final bytes = utf8.encode(csv);
-  final blob = html.Blob([bytes], 'text/csv;charset=utf-8;');
-  final url = html.Url.createObjectUrlFromBlob(blob);
-  final fileName = 'users_payroll_${statusTab}_${start.year}-${start.month.toString().padLeft(2, "0")}.csv';
-  final a = html.AnchorElement(href: url)..setAttribute('download', fileName)..click();
-  html.Url.revokeObjectUrl(url);
 }
