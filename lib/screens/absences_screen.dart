@@ -2,19 +2,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import '../services/attendance_service.dart';
-import 'package:flutter/material.dart';
-
-class AbsencesScreen extends StatelessWidget {
-  const AbsencesScreen({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Absences')),
-      body: const Center(child: Text('Absences Screen')),
-    );
-  }
-}
 
 class AbsencesScreen extends StatefulWidget {
   const AbsencesScreen({super.key});
