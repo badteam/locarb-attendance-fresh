@@ -1,7 +1,7 @@
 // lib/screens/admin_users_screen.dart
 import 'dart:async';
 import 'dart:convert';
-import 'dart:html' as html; // للويب فقط
+import 'dart:html' as html; // للويب فقط (تحميل CSV)
 import 'package:csv/csv.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -29,7 +29,7 @@ String roleLabel(String r) {
   }
 }
 
-/* ========================= UTIL: Safe number ========================= */
+/* ============================== HELPERS ============================== */
 
 double _numLike(dynamic v) {
   if (v == null) return 0.0;
@@ -38,12 +38,9 @@ double _numLike(dynamic v) {
   return 0.0;
 }
 
-Timestamp? _tsOrNull(dynamic v) {
-  if (v is Timestamp) return v;
-  return null;
-}
+Timestamp? _tsOrNull(dynamic v) => v is Timestamp ? v : null;
 
-/* ========================== ADMIN USERS PAGE ========================= */
+/* ========================= ADMIN USERS SCREEN ======================== */
 
 class AdminUsersScreen extends StatefulWidget {
   const AdminUsersScreen({super.key});
@@ -52,12 +49,16 @@ class AdminUsersScreen extends StatefulWidget {
 }
 
 class _AdminUsersScreenState extends State<AdminUsersScreen> {
+  // تبويب الحالة
   String _statusTab = 'approved'; // or 'pending'
+
+  // فلاتر و بحث
   final TextEditingController _searchCtrl = TextEditingController();
   String _roleFilter = 'all';
   String _branchFilterId = 'all';
   String _shiftFilterId = 'all';
 
+  // أسماء الفروع والشفتات للعرض
   final Map<String, String> _branchNames = {'all': 'All branches'};
   final Map<String, String> _shiftNames = {'all': 'All shifts'};
 
@@ -77,24 +78,23 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
     try {
       final br = await FirebaseFirestore.instance.collection('branches').get();
       for (final d in br.docs) {
-        _branchNames[d.id] = (d['name'] ?? d.id).toString();
+        _branchNames[d.id] = (d.data()['name'] ?? d.id).toString();
       }
     } catch (_) {}
     try {
       final sh = await FirebaseFirestore.instance.collection('shifts').get();
       for (final d in sh.docs) {
-        _shiftNames[d.id] = (d['name'] ?? d.id).toString();
+        _shiftNames[d.id] = (d.data()['name'] ?? d.id).toString();
       }
     } catch (_) {}
     if (mounted) setState(() {});
   }
 
   Query<Map<String, dynamic>> _buildUsersQuery() {
-    var q = FirebaseFirestore.instance
+    return FirebaseFirestore.instance
         .collection('users')
         .where('status', isEqualTo: _statusTab)
         .orderBy('fullName', descending: false);
-    return q;
   }
 
   Future<void> _setStatus(String uid, String status) async {
@@ -108,6 +108,89 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
     await FirebaseFirestore.instance.doc('users/$uid').set(
       {'role': role, 'updatedAt': FieldValue.serverTimestamp()},
       SetOptions(merge: true),
+    );
+  }
+
+  Future<void> _toggleAllowAllBranches(String uid, bool allow) async {
+    await FirebaseFirestore.instance.doc('users/$uid').set(
+      {'allowAllBranches': allow, 'updatedAt': FieldValue.serverTimestamp()},
+      SetOptions(merge: true),
+    );
+  }
+
+  Future<void> _assignBranchDialog(String uid) async {
+    String sel = _branchFilterId == 'all' ? '' : _branchFilterId;
+    await showDialog(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('Assign Branch'),
+          content: DropdownButtonFormField<String>(
+            value: sel.isEmpty ? null : sel,
+            isExpanded: true,
+            items: _branchNames.entries
+                .where((e) => e.key != 'all')
+                .map((e) => DropdownMenuItem(value: e.key, child: Text(e.value)))
+                .toList(),
+            onChanged: (v) => sel = v ?? '',
+            decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () async {
+                if (sel.isEmpty) return;
+                final name = _branchNames[sel] ?? sel;
+                await FirebaseFirestore.instance.doc('users/$uid').set({
+                  'primaryBranchId': sel,
+                  'branchName': name,
+                  'updatedAt': FieldValue.serverTimestamp(),
+                }, SetOptions(merge: true));
+                if (mounted) Navigator.pop(ctx);
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _assignShiftDialog(String uid) async {
+    String sel = _shiftFilterId == 'all' ? '' : _shiftFilterId;
+    await showDialog(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('Assign Shift'),
+          content: DropdownButtonFormField<String>(
+            value: sel.isEmpty ? null : sel,
+            isExpanded: true,
+            items: _shiftNames.entries
+                .where((e) => e.key != 'all')
+                .map((e) => DropdownMenuItem(value: e.key, child: Text(e.value)))
+                .toList(),
+            onChanged: (v) => sel = v ?? '',
+            decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () async {
+                if (sel.isEmpty) return;
+                final name = _shiftNames[sel] ?? sel;
+                await FirebaseFirestore.instance.doc('users/$uid').set({
+                  'assignedShiftId': sel,
+                  'shiftName': name,
+                  'updatedAt': FieldValue.serverTimestamp(),
+                }, SetOptions(merge: true));
+                if (mounted) Navigator.pop(ctx);
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        );
+      },
     );
   }
 
@@ -160,12 +243,12 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
       ),
       body: Column(
         children: [
-          // Filters
+          // شريط الفلاتر
           Padding(
             padding: const EdgeInsets.all(12),
             child: Wrap(
-              runSpacing: 12,
               spacing: 12,
+              runSpacing: 12,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
                 ConstrainedBox(
@@ -199,9 +282,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                   label: 'Branch',
                   child: DropdownButton<String>(
                     value: _branchFilterId,
-                    items: branches
-                        .map((e) => DropdownMenuItem(value: e.key, child: Text(e.value)))
-                        .toList(),
+                    items: branches.map((e) => DropdownMenuItem(value: e.key, child: Text(e.value))).toList(),
                     onChanged: (v) => setState(() => _branchFilterId = v ?? 'all'),
                   ),
                 ),
@@ -209,9 +290,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                   label: 'Shift',
                   child: DropdownButton<String>(
                     value: _shiftFilterId,
-                    items: shifts
-                        .map((e) => DropdownMenuItem(value: e.key, child: Text(e.value)))
-                        .toList(),
+                    items: shifts.map((e) => DropdownMenuItem(value: e.key, child: Text(e.value))).toList(),
                     onChanged: (v) => setState(() => _shiftFilterId = v ?? 'all'),
                   ),
                 ),
@@ -223,8 +302,10 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
               ],
             ),
           ),
+
           const Divider(height: 0),
-          // Users list
+
+          // قائمة المستخدمين
           Expanded(
             child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
               stream: _buildUsersQuery().snapshots(),
@@ -232,10 +313,9 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                 if (snap.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator());
                 }
-                if (!snap.hasData) {
-                  return const Center(child: Text('No data'));
-                }
+                if (!snap.hasData) return const Center(child: Text('No data'));
 
+                // فلترة إضافية بالذاكرة
                 final q = _searchCtrl.text.trim().toLowerCase();
                 final docs = snap.data!.docs.where((d) {
                   final m = d.data();
@@ -253,9 +333,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                   return roleOk && brOk && shOk && matches;
                 }).toList();
 
-                if (docs.isEmpty) {
-                  return const Center(child: Text('No users match these filters.'));
-                }
+                if (docs.isEmpty) return const Center(child: Text('No users match these filters.'));
 
                 return ListView.separated(
                   padding: const EdgeInsets.all(12),
@@ -264,14 +342,18 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                   itemBuilder: (_, i) {
                     final u = docs[i];
                     final m = u.data();
+
                     final name = (m['fullName'] ?? m['username'] ?? m['email'] ?? '').toString();
                     final email = (m['email'] ?? '').toString();
                     final role = (m['role'] ?? 'employee').toString();
                     final status = (m['status'] ?? 'pending').toString();
+
                     final brId = (m['primaryBranchId'] ?? '').toString();
                     final shId = (m['assignedShiftId'] ?? '').toString();
                     final brName = (m['branchName'] ?? (_branchNames[brId] ?? (brId.isEmpty ? 'No branch' : brId))).toString();
                     final shName = (m['shiftName'] ?? (_shiftNames[shId] ?? (shId.isEmpty ? 'No shift' : shId))).toString();
+
+                    final allowAny = (m['allowAllBranches'] ?? false) == true;
 
                     return Card(
                       elevation: 0,
@@ -280,6 +362,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
+                            // الرأس: الاسم/الإيميل والحالة
                             Row(
                               children: [
                                 CircleAvatar(child: Text(name.isEmpty ? '?' : name[0].toUpperCase())),
@@ -301,20 +384,52 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                                     color: status == 'approved' ? Colors.green : Colors.orange,
                                   ),
                                   label: Text(status),
-                                  backgroundColor: status == 'approved' ? Colors.green.withOpacity(.12) : Colors.orange.withOpacity(.12),
+                                  backgroundColor: status == 'approved'
+                                      ? Colors.green.withOpacity(.12)
+                                      : Colors.orange.withOpacity(.12),
                                   side: BorderSide.none,
                                 ),
                               ],
                             ),
+
                             const SizedBox(height: 10),
+
+                            // معلومات الفرع والشفت + أزرار التعيين
                             Wrap(
-                              spacing: 8, runSpacing: 8,
+                              spacing: 8,
+                              runSpacing: 8,
+                              crossAxisAlignment: WrapCrossAlignment.center,
                               children: [
                                 _InfoChip(icon: Icons.store, label: brName),
                                 _InfoChip(icon: Icons.access_time, label: shName),
+
+                                OutlinedButton.icon(
+                                  onPressed: () => _assignBranchDialog(u.id),
+                                  icon: const Icon(Icons.store_mall_directory_outlined),
+                                  label: const Text('Assign Branch'),
+                                ),
+                                OutlinedButton.icon(
+                                  onPressed: () => _assignShiftDialog(u.id),
+                                  icon: const Icon(Icons.access_time),
+                                  label: const Text('Assign Shift'),
+                                ),
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Text('Allow any branch'),
+                                    const SizedBox(width: 8),
+                                    Switch(
+                                      value: allowAny,
+                                      onChanged: (v) => _toggleAllowAllBranches(u.id, v),
+                                    ),
+                                  ],
+                                ),
                               ],
                             ),
+
                             const SizedBox(height: 10),
+
+                            // أكشنز الحالة + الدور + الباي رول
                             Row(
                               children: [
                                 OutlinedButton(
@@ -353,6 +468,8 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
   }
 }
 
+/* ============================== SMALL WIDGETS ============================== */
+
 class _FilterBox extends StatelessWidget {
   final String label;
   final Widget child;
@@ -386,7 +503,7 @@ class _InfoChip extends StatelessWidget {
   }
 }
 
-/* ============================= PAYROLL DIALOG ============================= */
+/* ============================== PAYROLL DIALOG ============================= */
 
 class PayrollDialog extends StatefulWidget {
   final String uid;
@@ -405,7 +522,7 @@ class _PayrollDialogState extends State<PayrollDialog> {
   @override
   void initState() {
     super.initState();
-    // نقرأ من أي اسم محتمل للراتب الأساسي
+    // نحاول نقرأ أي اسم شائع للراتب الأساسي
     final base = _numLike(widget.userData['baseSalary']) +
         _numLike(widget.userData['base_salary']) +
         _numLike(widget.userData['salary']) +
@@ -438,12 +555,25 @@ class _PayrollDialogState extends State<PayrollDialog> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Amount must be non-zero')));
       return;
     }
-    await FirebaseFirestore.instance.collection('users').doc(widget.uid).collection('payroll').add({
+
+    // نضيف في subcollection (payrollTransactions)
+    await FirebaseFirestore.instance
+        .collection('users').doc(widget.uid)
+        .collection('payrollTransactions')
+        .add({
       'type': _trxType, // bonus | allowance | deduction
       'amount': amt,
-      'date': Timestamp.fromDate(DateTime(_trxDate.year, _trxDate.month, _trxDate.day)),
+      'timestamp': Timestamp.fromDate(DateTime(_trxDate.year, _trxDate.month, _trxDate.day)),
       'createdAt': FieldValue.serverTimestamp(),
     });
+
+    // نحدّث مجاميع سريعة في user document (اختياري لو عندك)
+    await FirebaseFirestore.instance.doc('users/${widget.uid}').set({
+      if (_trxType == 'bonus' || _trxType == 'allowance') 'bonusesTotal': FieldValue.increment(amt),
+      if (_trxType == 'deduction') 'deductionsTotal': FieldValue.increment(amt),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
     _amountCtrl.clear();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Transaction added')));
@@ -453,12 +583,11 @@ class _PayrollDialogState extends State<PayrollDialog> {
 
   @override
   Widget build(BuildContext context) {
-    // آخر 12 حركة
+    // نعرض آخر الحركات من payrollTransactions
     final trxStream = FirebaseFirestore.instance
-        .collection('users')
-        .doc(widget.uid)
-        .collection('payroll')
-        .orderBy('date', descending: true)
+        .collection('users').doc(widget.uid)
+        .collection('payrollTransactions')
+        .orderBy('timestamp', descending: true)
         .limit(12)
         .snapshots();
 
@@ -469,13 +598,18 @@ class _PayrollDialogState extends State<PayrollDialog> {
         child: SingleChildScrollView(
           child: Column(
             children: [
+              // الراتب الأساسي
               Row(
                 children: [
                   Expanded(
                     child: TextField(
                       controller: _baseSalaryCtrl,
                       keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      decoration: const InputDecoration(labelText: 'Base salary', border: OutlineInputBorder(), isDense: true),
+                      decoration: const InputDecoration(
+                        labelText: 'Base salary',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
                     ),
                   ),
                   const SizedBox(width: 8),
@@ -483,6 +617,8 @@ class _PayrollDialogState extends State<PayrollDialog> {
                 ],
               ),
               const SizedBox(height: 16),
+
+              // إضافة حركة
               Align(alignment: Alignment.centerLeft, child: Text('Add transaction', style: Theme.of(context).textTheme.titleMedium)),
               const SizedBox(height: 8),
               Row(
@@ -522,6 +658,8 @@ class _PayrollDialogState extends State<PayrollDialog> {
                 ],
               ),
               const SizedBox(height: 16),
+
+              // آخر الحركات
               Align(alignment: Alignment.centerLeft, child: Text('Recent transactions', style: Theme.of(context).textTheme.titleMedium)),
               const SizedBox(height: 8),
               StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
@@ -537,11 +675,11 @@ class _PayrollDialogState extends State<PayrollDialog> {
                       final m = d.data();
                       final t = (m['type'] ?? '').toString();
                       final a = _numLike(m['amount']);
-                      final dt = _tsOrNull(m['date'])?.toDate() ?? _tsOrNull(m['createdAt'])?.toDate() ?? DateTime.now();
+                      final dt = _tsOrNull(m['timestamp'])?.toDate() ?? _tsOrNull(m['createdAt'])?.toDate() ?? DateTime.now();
                       return ListTile(
                         dense: true,
                         title: Text('$t  •  ${a.toStringAsFixed(2)}'),
-                        subtitle: Text('${dt.year}-${dt.month.toString().padLeft(2, "0")}-${dt.day.toString().padLeft(2, "0")}'),
+                        subtitle: Text('${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}'),
                         trailing: IconButton(
                           tooltip: 'Delete',
                           icon: const Icon(Icons.delete_outline),
@@ -581,6 +719,7 @@ Future<void> exportUsersCsvMonthlyCompat({
   final snap = await usersQuery.get();
   var users = snap.docs;
 
+  // فلترة إضافية
   final q = searchText.trim().toLowerCase();
   users = users.where((u) {
     final m = u.data();
@@ -624,14 +763,14 @@ Future<void> exportUsersCsvMonthlyCompat({
     final brNm  = (m['branchName'] ?? (branchNames[brId] ?? (brId.isEmpty ? 'No branch' : brId))).toString();
     final shNm  = (m['shiftName']  ?? (shiftNames[shId]  ?? (shId.isEmpty ? 'No shift'  : shId ))).toString();
 
-    // 1) base salary من أي حقل شائع
+    // Base salary من أي حقل شائع
     double baseSalary = 0;
     baseSalary += _numLike(m['baseSalary']);
     baseSalary += _numLike(m['base_salary']);
     baseSalary += _numLike(m['salary']);
     baseSalary += _numLike(m['monthlySalary']);
 
-    // 2) مجاميع محفوظة مباشرة في مستند المستخدم (aliases كثيرة)
+    // مجاميع محفوظة مباشرة (aliases شائعة)
     double bonusesFixed = 0;
     for (final key in [
       'bonus','bonuses','bonusTotal','bonusesTotal',
@@ -649,41 +788,38 @@ Future<void> exportUsersCsvMonthlyCompat({
       deductionsFixed += _numLike(m[key]);
     }
 
-    // 3) حركات شهرية من subcollection (تاريخ: date أو txnDate أو createdAt)
+    // حركات شهرية من payroll أو payrollTransactions
     double bonusesVar = 0, deductionsVar = 0;
-    try {
-      // هنجيب عدد معقول ونرشّح في الذاكرة لو ماقدرناش نستخدم where على كل الأسماء.
-      final trx = await FirebaseFirestore.instance
-          .collection('users').doc(uid).collection('payroll')
-          .orderBy('date', descending: true)
-          .limit(500)
-          .get();
+    Future<void> readSubCol(String sub) async {
+      try {
+        // نقرأ عدد معقول ونرشّح بالتاريخ محليًا لدعم أسماء تاريخ مختلفة
+        final col = FirebaseFirestore.instance.collection('users').doc(uid).collection(sub);
+        final docs1 = await col.orderBy('date', descending: true).limit(500).get();
+        final docs2 = await col.orderBy('createdAt', descending: true).limit(500).get();
 
-      final otherTrx = await FirebaseFirestore.instance
-          .collection('users').doc(uid).collection('payroll')
-          .orderBy('createdAt', descending: true)
-          .limit(500)
-          .get();
+        final all = <QueryDocumentSnapshot<Map<String, dynamic>>>{}
+          ..addAll(docs1.docs)..addAll(docs2.docs);
 
-      final allDocs = <QueryDocumentSnapshot<Map<String, dynamic>>>{}
-        ..addAll(trx.docs) ..addAll(otherTrx.docs);
+        for (final d in all) {
+          final mm = d.data();
+          final t = (mm['type'] ?? '').toString().toLowerCase();
+          final amount = _numLike(mm['amount']);
+          final ts = _tsOrNull(mm['date']) ?? _tsOrNull(mm['txnDate']) ?? _tsOrNull(mm['timestamp']) ?? _tsOrNull(mm['createdAt']);
+          final dt = ts?.toDate();
+          if (dt == null) continue;
+          if (dt.isBefore(start) || dt.isAfter(end)) continue;
 
-      for (final d in allDocs) {
-        final mm = d.data();
-        final t = (mm['type'] ?? '').toString().toLowerCase();
-        final amount = _numLike(mm['amount']);
-        final ts = _tsOrNull(mm['date']) ?? _tsOrNull(mm['txnDate']) ?? _tsOrNull(mm['createdAt']);
-        final dt = ts?.toDate();
-        if (dt == null) continue;
-        if (dt.isBefore(start) || dt.isAfter(end)) continue;
-
-        if (t == 'bonus' || t == 'allowance') {
-          bonusesVar += amount;
-        } else if (t == 'deduction') {
-          deductionsVar += amount;
+          if (t == 'bonus' || t == 'allowance') {
+            bonusesVar += amount;
+          } else if (t == 'deduction') {
+            deductionsVar += amount;
+          }
         }
-      }
-    } catch (_) {}
+      } catch (_) {}
+    }
+
+    await readSubCol('payroll');
+    await readSubCol('payrollTransactions');
 
     final bonuses = bonusesFixed + bonusesVar;
     final deductions = deductionsFixed + deductionsVar;
@@ -700,7 +836,7 @@ Future<void> exportUsersCsvMonthlyCompat({
     ]);
   }
 
-  if (!kIsWeb) return;
+  if (!kIsWeb) return; // التصدير للويب هنا فقط
   final csv = const ListToCsvConverter().convert(rows);
   final bytes = utf8.encode(csv);
   final blob = html.Blob([bytes], 'text/csv;charset=utf-8;');
