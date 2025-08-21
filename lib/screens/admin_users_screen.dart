@@ -6,7 +6,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
-import '../services/attendance_service.dart';
+// ملاحظة: مفيش AttendanceService هنا. تبويب الغياب هيقرأ مباشرة من attendance.
 
 class AdminUsersScreen extends StatefulWidget {
   const AdminUsersScreen({super.key});
@@ -41,16 +41,15 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
     'admin',
   ];
 
-  // خدمة الحضور للتاب Absences (لسحب الإعدادات فقط)
-  final _attSvc = AttendanceService();
-
-  // حالة تبويب Absences
+  // ======= حالة تبويب Absences (كلها داخل نفس الشاشة) =======
   DateTimeRange? _range;
   String _absBranchFilterId = 'all';
   String _absShiftFilterId = 'all';
-  String _typeFilter = 'exceptions'; // exceptions | absent | missing
+  final _absSearchCtrl = TextEditingController();
   bool _absLoading = false;
-  List<_ExceptionRow> _absRows = [];
+  List<_AbsRow> _absRows = [];
+
+  // مستخدمين Approved (لتجميع أسماء/فروع سريعة لو احتجنا)
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _usersApproved = [];
 
   @override
@@ -60,7 +59,6 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
     _tab.addListener(() {
       setState(() {});
       if (_tab.index == 2) {
-        // Absences tab: تأكد أن البيانات جاهزة
         _ensureAbsencesInit();
       }
     });
@@ -79,6 +77,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
   void dispose() {
     _tab.dispose();
     _searchCtrl.dispose();
+    _absSearchCtrl.dispose();
     super.dispose();
   }
 
@@ -129,15 +128,15 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
 
   bool _matchesFilters(Map<String, dynamic> m) {
     final role = (m['role'] ?? 'employee').toString();
-    final branchId = (m['primaryBranchId'] ?? '').toString();
-    final shiftId = (m['assignedShiftId'] ?? '').toString();
+    final branchId = (m['primaryBranchId'] ?? m['branchId'] ?? '').toString();
+    final shiftId = (m['assignedShiftId'] ?? m['shiftId'] ?? '').toString();
 
     final okRole = _roleFilter == 'all' || _roleFilter == role;
     final okBr = _branchFilterId == 'all' || _branchFilterId == branchId;
     final okSh = _shiftFilterId == 'all' || _shiftFilterId == shiftId;
 
     final q = _searchCtrl.text.trim().toLowerCase();
-    final name = (m['fullName'] ?? m['username'] ?? '').toString().toLowerCase();
+    final name = (m['fullName'] ?? m['name'] ?? m['username'] ?? '').toString().toLowerCase();
     final email = (m['email'] ?? '').toString().toLowerCase();
     final okSearch = q.isEmpty || name.contains(q) || email.contains(q);
 
@@ -174,6 +173,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
     if (chosen == null) return;
     await _updateUser(uid, {
       'primaryBranchId': chosen,
+      'branchId': chosen,
       'branchName': _branchLabelFor(chosen),
     });
   }
@@ -192,6 +192,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
     if (chosen == null) return;
     await _updateUser(uid, {
       'assignedShiftId': chosen,
+      'shiftId': chosen,
       'shiftName': _shiftLabelFor(chosen),
     });
   }
@@ -200,7 +201,6 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
       _updateUser(uid, {'allowAnyBranch': v});
 
   Future<void> _editPayrollBasic(String uid, Map<String, dynamic> user) async {
-    // حوار بسيط مؤقت (Base/Allow/Deduct/OvertimeAmount شهري)
     final m = user;
     final base = TextEditingController(text: (m['salaryBase'] ?? 0).toString());
     final allow = TextEditingController(text: (m['allowances'] ?? 0).toString());
@@ -244,7 +244,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
                 'salaryBase': b,
                 'allowances': a,
                 'deductions': d,
-                'overtimeAmount': o, // بدل OT rate
+                'overtimeAmount': o,
                 'updatedAt': FieldValue.serverTimestamp(),
               }, SetOptions(merge: true));
               if (context.mounted) Navigator.pop(context);
@@ -274,8 +274,8 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
   Future<void> _exportUsersCsvPressed() async {
     if (!kIsWeb) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('CSV export works on Web builds only.'),
-      ));
+        content: Text('CSV export works on Web builds only.')),
+      );
       return;
     }
 
@@ -300,14 +300,14 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
     for (final d in users) {
       final m = d.data();
       final uid = d.id;
-      final name = (m['fullName'] ?? m['username'] ?? m['email'] ?? '').toString();
+      final name = (m['fullName'] ?? m['name'] ?? m['username'] ?? m['email'] ?? '').toString();
       final role = (m['role'] ?? 'employee').toString();
 
       final brName = (m['branchName'] ?? _branchLabelFor(
-        (m['primaryBranchId'] ?? '').toString(),
+        (m['primaryBranchId'] ?? m['branchId'] ?? '').toString(),
       )).toString();
       final shName = (m['shiftName'] ?? _shiftLabelFor(
-        (m['assignedShiftId'] ?? '').toString(),
+        (m['assignedShiftId'] ?? m['shiftId'] ?? '').toString(),
       )).toString();
 
       final base = _toNum(m['salaryBase']);
@@ -362,305 +362,163 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
 
   String _fmt(num v) => v is int ? v.toString() : v.toStringAsFixed(2);
 
-  // ================== ABSENCES TAB ==================
+  // ================== ABSENCES (داخل نفس الشاشة) ==================
   Future<void> _ensureAbsencesInit() async {
-    if (_usersApproved.isNotEmpty) return;
-    final us = await FirebaseFirestore.instance
-        .collection('users')
-        .where('status', isEqualTo: 'approved')
-        .orderBy('fullName')
-        .get();
-    setState(() {
+    if (_usersApproved.isEmpty) {
+      final us = await FirebaseFirestore.instance
+          .collection('users')
+          .where('status', isEqualTo: 'approved')
+          .orderBy('fullName')
+          .get();
       _usersApproved = us.docs;
-    });
+    }
     await _loadAbsencesData();
   }
 
-  // ✅ محول عام لأي تمثيل تاريخ -> DateTime
-  DateTime _dateFromAny(dynamic v) {
-    if (v is DateTime) return v;
-    if (v is Timestamp) return v.toDate();
-    if (v is String) return DateTime.tryParse(v) ?? DateTime(1970, 1, 1);
-    return DateTime(1970, 1, 1);
+  String _dayKey(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+  DateTime? _parseLocalDay(dynamic localDay, dynamic at) {
+    if (localDay is String) {
+      final parts = localDay.split('-');
+      if (parts.length == 3) {
+        final y = int.tryParse(parts[0]) ?? 1970;
+        final m = int.tryParse(parts[1]) ?? 1;
+        final d = int.tryParse(parts[2]) ?? 1;
+        return DateTime(y, m, d);
+      }
+    }
+    if (at is Timestamp) {
+      final dt = at.toDate();
+      return DateTime(dt.year, dt.month, dt.day);
+    }
+    return null;
   }
 
-  // --- NEW: نجمع الـattendance مباشرة من الـDB حسب الschema الجديد ---
   Future<void> _loadAbsencesData() async {
     if (_range == null) return;
     setState(() => _absLoading = true);
 
     try {
-      final settings = await _attSvc.loadSettings();
-      final weekend = settings.weekendDays; // ممكن List<int> أو List<String>
-      final holidays = settings.holidays;   // ممكن List<DateTime> أو List<Timestamp> أو List<String>
+      final fromStr = _dayKey(_range!.start);
+      final toStr = _dayKey(_range!.end);
 
-      final from = _range!.start;
-      final to = _range!.end;
-      final days = _attSvc.daysRange(from, to);
+      final qs = await FirebaseFirestore.instance
+          .collection('attendance')
+          .where('type', isEqualTo: 'absent')
+          .where('localDay', isGreaterThanOrEqualTo: fromStr)
+          .where('localDay', isLessThanOrEqualTo: toStr)
+          .get();
 
-      // فلترة المستخدمين approved حسب branch/shift للتبويب
-      final filteredUsers = _usersApproved.where((u) {
-        final m = u.data();
-        if (_absBranchFilterId != 'all' &&
-            (m['primaryBranchId'] ?? '') != _absBranchFilterId) return false;
-        if (_absShiftFilterId != 'all' &&
-            (m['assignedShiftId'] ?? '') != _absShiftFilterId) return false;
-        return true;
-      }).toList();
+      final filtered = <_AbsRow>[];
+      final q = _absSearchCtrl.text.trim().toLowerCase();
 
-      final List<_ExceptionRow> rows = [];
+      for (final d in qs.docs) {
+        final m = d.data();
+        final branchId = (m['branchId'] ?? '').toString();
+        final shiftId = (m['shiftId'] ?? '').toString();
+        if (_absBranchFilterId != 'all' && branchId != _absBranchFilterId) continue;
+        if (_absShiftFilterId != 'all' && shiftId != _absShiftFilterId) continue;
 
-      // نطاق اليوم كنص ISO
-      final fromStr = _dayKey(from);
-      final toStr = _dayKey(to);
+        final localDay = (m['localDay'] ?? '').toString();
+        final date = _parseLocalDay(localDay, m['at']);
+        if (date == null) continue;
 
-      for (final u in filteredUsers) {
-        final uid = u.id;
-        final um = u.data();
-        final name =
-            (um['fullName'] ?? um['username'] ?? um['email'] ?? '').toString();
-        final brName = (um['branchName'] ?? _branchLabelFor(
-          (um['primaryBranchId'] ?? '').toString(),
-        )).toString();
-        final shName = (um['shiftName'] ?? _shiftLabelFor(
-          (um['assignedShiftId'] ?? '').toString(),
-        )).toString();
+        final userId = (m['userId'] ?? '').toString();
+        final userName = (m['userName'] ?? '').toString();
+        final branchName = (m['branchName'] ?? _branchLabelFor(branchId)).toString();
+        final shiftName = (m['shiftName'] ?? _shiftLabelFor(shiftId)).toString();
 
-        // اسحب كل مستندات attendance لهذا الموظف في الفترة
-        final attSnap = await FirebaseFirestore.instance
-            .collection('attendance')
-            .where('userId', isEqualTo: uid)
-            .where('localDay', isGreaterThanOrEqualTo: fromStr)
-            .where('localDay', isLessThanOrEqualTo: toStr)
-            .get()
-            .timeout(const Duration(seconds: 20));
+        final hay = '$userId $userName $branchName $localDay'.toLowerCase();
+        if (q.isNotEmpty && !hay.contains(q)) continue;
 
-        // نجمع أنواع اليوم: set {'in','out','absent'}
-        final Map<String, Set<String>> dayTypes = {};
-        for (final d in attSnap.docs) {
-          final m = d.data();
-          final localDay = (m['localDay'] ?? '').toString();
-          final type = (m['type'] ?? '').toString();
-          if (localDay.isEmpty || type.isEmpty) continue;
-          dayTypes.putIfAbsent(localDay, () => <String>{}).add(type);
-        }
-
-        for (final day in days) {
-          final dayKey = _dayKey(day);
-          final types = dayTypes[dayKey] ?? const <String>{};
-
-          // ✅ حساب العطلات والويكند بشكل آمن للأنواع
-          final isHoliday = holidays.any((h) => _sameDay(_dateFromAny(h), day));
-
-          bool _weekendHasInt(int w) => weekend.any((x) => x is int && x == w);
-          bool _weekendHasName(String n) =>
-              weekend.any((x) => x is String && x.toString().toLowerCase() == n);
-
-          final int dartW = day.weekday; // 1=Mon..7=Sun
-          final String nameW = _weekdayName(dartW); // 'mon'..'sun'
-          final isWeekend = _weekendHasInt(dartW) || _weekendHasName(nameW);
-
-          final status = _calcStatusFromTypes(
-            types: types,
-            isWeekend: isWeekend,
-            isHoliday: isHoliday,
-          );
-
-          // فلترة نوع العرض
-          if (_typeFilter == 'absent') {
-            if (status != 'absent') continue;
-          } else if (_typeFilter == 'missing') {
-            if (status != 'incomplete_in' && status != 'incomplete_out') continue;
-          } else {
-            // exceptions = absent + missing فقط
-            if (status != 'absent' &&
-                status != 'incomplete_in' &&
-                status != 'incomplete_out') continue;
-          }
-
-          rows.add(_ExceptionRow(
-            uid: uid,
-            userName: name,
-            branchName: brName,
-            shiftName: shName,
-            date: day,
-            status: status,
-            note: '', // optional
-            proofUrl: '',
-            missing: status == 'incomplete_in'
-                ? const ['in']
-                : status == 'incomplete_out'
-                    ? const ['out']
-                    : const <String>[],
-          ));
-        }
+        filtered.add(_AbsRow(
+          docId: d.id,
+          userId: userId,
+          userName: userName,
+          branchId: branchId,
+          branchName: branchName,
+          shiftId: shiftId,
+          shiftName: shiftName,
+          date: date,
+          localDay: localDay,
+        ));
       }
 
+      filtered.sort((a, b) {
+        final c = b.date.compareTo(a.date);
+        if (c != 0) return c;
+        final c2 = a.branchName.compareTo(b.branchName);
+        if (c2 != 0) return c2;
+        return a.userId.compareTo(b.userId);
+      });
+
       setState(() {
-        _absRows = rows
-          ..sort((a, b) {
-            final c = a.date.compareTo(b.date);
-            if (c != 0) return c;
-            return a.userName.compareTo(b.userName);
-          });
+        _absRows = filtered;
         _absLoading = false;
       });
     } catch (e) {
-      if (mounted) {
-        setState(() => _absLoading = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Absences load error: $e')),
-        );
-      }
+      setState(() => _absLoading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Load absences failed: $e')),
+      );
     }
   }
 
-  // حالة اليوم من الـtypes:
-  // - فيه absent     => absent
-  // - فيه in & out   => present
-  // - فيه in فقط     => incomplete_out
-  // - فيه out فقط    => incomplete_in
-  // - مفيش حاجة:
-  //     - لو Holiday => holiday
-  //     - لو Weekend => weekend
-  //     - غير كده   => absent (مافيش حركة)
-  String _calcStatusFromTypes({
-    required Set<String> types,
-    required bool isWeekend,
-    required bool isHoliday,
-  }) {
-    if (types.contains('absent')) return 'absent';
-    final hasIn = types.contains('in');
-    final hasOut = types.contains('out');
-    if (hasIn && hasOut) return 'present';
-    if (hasIn && !hasOut) return 'incomplete_out';
-    if (!hasIn && hasOut) return 'incomplete_in';
-    if (isHoliday) return 'holiday';
-    if (isWeekend) return 'weekend';
-    return 'absent';
+  Future<void> _absMarkPresent(_AbsRow r) async {
+    // يحوّل الغياب لحضور (IN/OUT) ويمسح سجل الغياب
+    final d = r.date;
+    final inAt = DateTime(d.year, d.month, d.day, 9, 0);
+    final outAt = DateTime(d.year, d.month, d.day, 17, 0);
+
+    final inRef = FirebaseFirestore.instance
+        .collection('attendance')
+        .doc('${r.userId}_${r.localDay}_in');
+    final outRef = FirebaseFirestore.instance
+        .collection('attendance')
+        .doc('${r.userId}_${r.localDay}_out');
+    final absRef = FirebaseFirestore.instance
+        .collection('attendance')
+        .doc(r.docId);
+
+    final batch = FirebaseFirestore.instance.batch();
+
+    batch.set(inRef, {
+      'userId': r.userId,
+      'userName': r.userName,
+      'branchId': r.branchId,
+      'branchName': r.branchName,
+      'shiftId': r.shiftId,
+      'localDay': r.localDay,
+      'type': 'in',
+      'at': Timestamp.fromDate(inAt),
+      'createdAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+    batch.set(outRef, {
+      'userId': r.userId,
+      'userName': r.userName,
+      'branchId': r.branchId,
+      'branchName': r.branchName,
+      'shiftId': r.shiftId,
+      'localDay': r.localDay,
+      'type': 'out',
+      'at': Timestamp.fromDate(outAt),
+      'createdAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+    batch.delete(absRef);
+
+    await batch.commit();
+    await _loadAbsencesData();
   }
 
-  // ISO day key 'YYYY-MM-DD'
-  String _dayKey(DateTime d) =>
-      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
-
-  bool _sameDay(DateTime a, DateTime b) =>
-    a.year == b.year && a.month == b.month && a.day == b.day;
-
-  String _weekdayName(int dartWeekday) {
-    // Dart: 1=Mon..7=Sun — نخلي أسماء lowercase
-    switch (dartWeekday) {
-      case 1: return 'mon';
-      case 2: return 'tue';
-      case 3: return 'wed';
-      case 4: return 'thu';
-      case 5: return 'fri';
-      case 6: return 'sat';
-      case 7: return 'sun';
-      default: return 'mon';
-    }
-  }
-
-  Future<void> _absOnAction(String action, _ExceptionRow r) async {
-    final settings = await _attSvc.loadSettings();
-    switch (action) {
-      case 'fix_in':
-        final picked = await _pickTime('Select IN time');
-        if (picked != null) {
-          await _attSvc.fixMissing(
-            uid: r.uid,
-            date: r.date,
-            addIn: true,
-            addOut: false,
-            inTime: picked,
-            outTime: null,
-            note: 'Fixed IN manually',
-            proofUrl: r.proofUrl.isNotEmpty ? r.proofUrl : null,
-            weekendDays: settings.weekendDays,
-            holidays: settings.holidays,
-          );
-          await _loadAbsencesData();
-        }
-        break;
-      case 'fix_out':
-        final picked2 = await _pickTime('Select OUT time');
-        if (picked2 != null) {
-          await _attSvc.fixMissing(
-            uid: r.uid,
-            date: r.date,
-            addIn: false,
-            addOut: true,
-            inTime: null,
-            outTime: picked2,
-            note: 'Fixed OUT manually',
-            proofUrl: r.proofUrl.isNotEmpty ? r.proofUrl : null,
-            weekendDays: settings.weekendDays,
-            holidays: settings.holidays,
-          );
-          await _loadAbsencesData();
-        }
-        break;
-      case 'mark_present':
-        await _attSvc.setManualStatus(uid: r.uid, date: r.date, status: 'present');
-        await _loadAbsencesData();
-        break;
-      case 'mark_leave':
-        await _attSvc.setManualStatus(uid: r.uid, date: r.date, status: 'leave');
-        await _loadAbsencesData();
-        break;
-      case 'mark_absent':
-        await _attSvc.setManualStatus(uid: r.uid, date: r.date, status: 'absent');
-        await _loadAbsencesData();
-        break;
-      case 'attach_proof':
-        final url = await _askText('Attach proof URL', hint: 'https://… or gs://…');
-        if (url != null && url.trim().isNotEmpty) {
-          await _attSvc.setManualStatus(
-            uid: r.uid,
-            date: r.date,
-            status: r.status, // نحافظ على الحالة
-            proofUrl: url.trim(),
-          );
-          await _loadAbsencesData();
-        }
-        break;
-      case 'reset_auto':
-        final key = _attSvc.dayKey(r.date);
-        await FirebaseFirestore.instance
-            .collection('dailyAttendance')
-            .doc(key)
-            .collection('users')
-            .doc(r.uid)
-            .set({'source': 'auto'}, SetOptions(merge: true));
-        await _loadAbsencesData();
-        break;
-    }
-  }
-
-  Future<TimeOfDay?> _pickTime(String title) async {
-    final now = TimeOfDay.now();
-    return showTimePicker(context: context, initialTime: now, helpText: title);
-  }
-
-  Future<String?> _askText(String title, {String? hint}) async {
-    final c = TextEditingController();
-    return showDialog<String?>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: Text(title),
-        content: TextField(
-          controller: c,
-          decoration: InputDecoration(
-            hintText: hint,
-            border: const OutlineInputBorder(),
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, c.text), child: const Text('Save')),
-        ],
-      ),
-    );
+  Future<void> _absDelete(_AbsRow r) async {
+    await FirebaseFirestore.instance
+        .collection('attendance')
+        .doc(r.docId)
+        .delete();
+    await _loadAbsencesData();
   }
 
   // ================== BUILD ==================
@@ -679,7 +537,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
           onTap: (_) => setState(() {}),
         ),
         actions: [
-          if (_tab.index != 2) // التصدير لليوزرز فقط
+          if (_tab.index != 2)
             IconButton(
               tooltip: 'Export CSV',
               onPressed: _exportUsersCsvPressed,
@@ -698,7 +556,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
               children: [
                 _usersTab(),       // Pending
                 _usersTab(),       // Approved
-                _absencesTab(),    // Absences
+                _absencesTab(),    // Absences (في نفس الشاشة)
               ],
             ),
           ),
@@ -721,12 +579,12 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
           return const Center(child: Text('No users found.'));
         }
 
-        // نجمع حسب الفرع لعرض أنظف
+        // نجمع حسب الفرع
         final byBranch =
             <String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>{};
         for (final d in docs) {
           final m = d.data();
-          final brId = (m['primaryBranchId'] ?? '').toString();
+          final brId = (m['primaryBranchId'] ?? m['branchId'] ?? '').toString();
           byBranch.putIfAbsent(brId, () => []).add(d);
         }
 
@@ -736,7 +594,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
                 ? 'No branch'
                 : _branchLabelFor(entry.key);
             final list = entry.value;
-            final shownCount = list.length; // بعد الفلاتر بالفعل
+            final shownCount = list.length;
             return ExpansionTile(
               title: Text('$title — $shownCount user(s)'),
               children: list
@@ -832,7 +690,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
     );
   }
 
-  // ======== ABSENCES TAB ========
+  // ======== ABSENCES TAB (داخل نفس الشاشة) ========
   Widget _absencesTab() {
     return Column(
       children: [
@@ -842,7 +700,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
           child: _absLoading
               ? const Center(child: CircularProgressIndicator())
               : _absRows.isEmpty
-                  ? const Center(child: Text('No exceptions for selected filters.'))
+                  ? const Center(child: Text('No absences for selected filters.'))
                   : ListView.separated(
                       itemCount: _absRows.length,
                       separatorBuilder: (_, __) => const Divider(height: 1),
@@ -881,17 +739,6 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
             ),
             DropdownButtonHideUnderline(
               child: DropdownButton<String>(
-                value: _typeFilter,
-                items: const [
-                  DropdownMenuItem(value: 'exceptions', child: Text('Absent + Missing')),
-                  DropdownMenuItem(value: 'absent', child: Text('Absent only')),
-                  DropdownMenuItem(value: 'missing', child: Text('Missing IN/OUT only')),
-                ],
-                onChanged: (v) => setState(() => _typeFilter = v ?? 'exceptions'),
-              ),
-            ),
-            DropdownButtonHideUnderline(
-              child: DropdownButton<String>(
                 value: _absBranchFilterId,
                 items: [
                   const DropdownMenuItem(value: 'all', child: Text('All branches')),
@@ -916,6 +763,19 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
                 onChanged: (v) => setState(() => _absShiftFilterId = v ?? 'all'),
               ),
             ),
+            SizedBox(
+              width: 240,
+              child: TextField(
+                controller: _absSearchCtrl,
+                onChanged: (_) => setState(() {}),
+                decoration: const InputDecoration(
+                  prefixIcon: Icon(Icons.search),
+                  hintText: 'Search (name / code / branch)',
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ),
             const SizedBox(width: 8),
             FilledButton.icon(
               onPressed: _absLoading ? null : _loadAbsencesData,
@@ -928,91 +788,40 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
     );
   }
 
-  Widget _absRowTile(_ExceptionRow r) {
-    final d = r.date;
-    final dateStr = _fmtD(d);
-    final badge = _badge(r.status);
+  Widget _absRowTile(_AbsRow r) {
+    final dateStr = _fmtD(r.date);
     return ListTile(
-      title: Text('${r.userName} • $dateStr'),
+      title: Text('${r.userName.isEmpty ? r.userId : r.userName} • $dateStr'),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Wrap(spacing: 8, runSpacing: 6, children: [
-            badge,
+            Chip(
+              label: const Text('Absent', style: TextStyle(color: Colors.white)),
+              backgroundColor: Colors.red,
+            ),
+            if (r.userId.isNotEmpty) Chip(label: Text('Code: ${r.userId}')),
             if (r.branchName.isNotEmpty) Chip(label: Text('Branch: ${r.branchName}')),
             if (r.shiftName.isNotEmpty) Chip(label: Text('Shift: ${r.shiftName}')),
           ]),
-          if (r.note.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: Text('Note: ${r.note}'),
-            ),
-          if (r.proofUrl.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Text('Proof: ${r.proofUrl}',
-                  style: const TextStyle(decoration: TextDecoration.underline)),
-            ),
         ],
       ),
       trailing: PopupMenuButton<String>(
-        onSelected: (v) => _absOnAction(v, r),
-        itemBuilder: (context) => [
-          if (r.status == 'incomplete_in' || r.status == 'absent')
-            const PopupMenuItem(value: 'fix_in', child: Text('Fix IN…')),
-          if (r.status == 'incomplete_out' || r.status == 'absent')
-            const PopupMenuItem(value: 'fix_out', child: Text('Fix OUT…')),
-          const PopupMenuDivider(),
-          const PopupMenuItem(value: 'mark_present', child: Text('Mark Present')),
-          const PopupMenuItem(value: 'mark_leave', child: Text('Mark Leave')),
-          const PopupMenuItem(value: 'mark_absent', child: Text('Mark Absent')),
-          const PopupMenuDivider(),
-          const PopupMenuItem(value: 'attach_proof', child: Text('Attach proof URL…')),
-          const PopupMenuItem(value: 'reset_auto', child: Text('Reset to Auto')),
+        onSelected: (v) async {
+          switch (v) {
+            case 'present':
+              await _absMarkPresent(r);
+              break;
+            case 'delete':
+              await _absDelete(r);
+              break;
+          }
+        },
+        itemBuilder: (context) => const [
+          PopupMenuItem(value: 'present', child: Text('Mark Present (create IN/OUT)')),
+          PopupMenuItem(value: 'delete', child: Text('Delete absence')),
         ],
       ),
-    );
-  }
-
-  Widget _badge(String status) {
-    Color c;
-    String t;
-    switch (status) {
-      case 'absent':
-        c = Colors.red;
-        t = 'Absent';
-        break;
-      case 'incomplete_in':
-        c = Colors.orange;
-        t = 'Missing IN';
-        break;
-      case 'incomplete_out':
-        c = Colors.orange;
-        t = 'Missing OUT';
-        break;
-      case 'present':
-        c = Colors.green;
-        t = 'Present';
-        break;
-      case 'leave':
-        c = Colors.blue;
-        t = 'Leave';
-        break;
-      case 'weekend':
-        c = Colors.grey;
-        t = 'Weekend';
-        break;
-      case 'holiday':
-        c = Colors.grey;
-        t = 'Holiday';
-        break;
-      default:
-        c = Colors.black54;
-        t = status;
-    }
-    return Chip(
-      label: Text(t, style: const TextStyle(color: Colors.white)),
-      backgroundColor: c,
     );
   }
 
@@ -1045,7 +854,7 @@ class _UserCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final name = (data['fullName'] ?? data['username'] ?? '').toString();
+    final name = (data['fullName'] ?? data['name'] ?? data['username'] ?? '').toString();
     final email = (data['email'] ?? '').toString();
     final role = (data['role'] ?? 'employee').toString();
     final status = (data['status'] ?? 'pending').toString();
@@ -1198,26 +1007,27 @@ class _SelectDialogState extends State<_SelectDialog> {
   }
 }
 
-// ====== Absences models ======
-class _ExceptionRow {
-  final String uid;
+// ====== Absences model ======
+class _AbsRow {
+  final String docId;
+  final String userId;
   final String userName;
+  final String branchId;
   final String branchName;
+  final String shiftId;
   final String shiftName;
   final DateTime date;
-  final String status;
-  final String note;
-  final String proofUrl;
-  final List<String> missing;
-  _ExceptionRow({
-    required this.uid,
+  final String localDay;
+
+  _AbsRow({
+    required this.docId,
+    required this.userId,
     required this.userName,
+    required this.branchId,
     required this.branchName,
+    required this.shiftId,
     required this.shiftName,
     required this.date,
-    required this.status,
-    required this.note,
-    required this.proofUrl,
-    required this.missing,
+    required this.localDay,
   });
 }
