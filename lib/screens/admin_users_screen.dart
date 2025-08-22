@@ -6,8 +6,6 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
-// ملاحظة: لا نستخدم AttendanceService هنا. تبويب الغياب يقرأ مباشرة من attendance.
-
 class AdminUsersScreen extends StatefulWidget {
   const AdminUsersScreen({super.key});
 
@@ -51,15 +49,12 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
   // كروت الموظفين المجمّعة
   List<_AbsAgg> _absCards = [];
 
-  // (غير مستخدمة مباشرة لكن نحتفظ بها لو احتجنا لاحقاً)
+  // users approved
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _usersApproved = [];
 
-  // إعدادات الويك إند/العطلات للـ backfill (عدّلها حسب بلدك)
-  // Monday=1 ... Sunday=7
-  final Set<int> _weekendDays = {6, 7}; // سبت/أحد افتراضيًا
-  final Set<String> _holidays = {
-    // أمثلة: '2025-01-01', '2025-08-15'
-  };
+  // إعدادات ويك إند/عطلات (لتوليد غياب تلقائي اختياريًا)
+  final Set<int> _weekendDays = {6, 7}; // سبت/أحد
+  final Set<String> _holidays = {};
 
   @override
   void initState() {
@@ -130,14 +125,13 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
   Query<Map<String, dynamic>> _usersQuery() {
     var q = FirebaseFirestore.instance
         .collection('users')
-        .where('status', isEqualTo: _statusTab); // pending/approved
+        .where('status', isEqualTo: _statusTab);
     return q.orderBy('fullName', descending: false);
   }
 
   bool _matchesFilters(Map<String, dynamic> m) {
     final role = (m['role'] ?? 'employee').toString();
-    final branchId =
-        (m['primaryBranchId'] ?? m['branchId'] ?? '').toString();
+    final branchId = (m['primaryBranchId'] ?? m['branchId'] ?? '').toString();
     final shiftId = (m['assignedShiftId'] ?? m['shiftId'] ?? '').toString();
 
     final okRole = _roleFilter == 'all' || _roleFilter == role;
@@ -145,8 +139,9 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
     final okSh = _shiftFilterId == 'all' || _shiftFilterId == shiftId;
 
     final q = _searchCtrl.text.trim().toLowerCase();
-    final name =
-        (m['fullName'] ?? m['name'] ?? m['username'] ?? '').toString().toLowerCase();
+    final name = (m['fullName'] ?? m['name'] ?? m['username'] ?? '')
+        .toString()
+        .toLowerCase();
     final email = (m['email'] ?? '').toString().toLowerCase();
     final okSearch = q.isEmpty || name.contains(q) || email.contains(q);
 
@@ -313,25 +308,15 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
     for (final d in users) {
       final m = d.data();
       final uid = d.id;
-      final name = (m['fullName'] ??
-              m['name'] ??
-              m['username'] ??
-              m['email'] ??
-              '')
+      final name = (m['fullName'] ?? m['name'] ?? m['username'] ?? m['email'] ?? '')
           .toString();
       final role = (m['role'] ?? 'employee').toString();
 
       final brName = (m['branchName'] ??
-              _branchLabelFor(
-                (m['primaryBranchId'] ?? m['branchId'] ?? '')
-                    .toString(),
-              ))
+              _branchLabelFor((m['primaryBranchId'] ?? m['branchId'] ?? '').toString()))
           .toString();
       final shName = (m['shiftName'] ??
-              _shiftLabelFor(
-                (m['assignedShiftId'] ?? m['shiftId'] ?? '')
-                    .toString(),
-              ))
+              _shiftLabelFor((m['assignedShiftId'] ?? m['shiftId'] ?? '').toString()))
           .toString();
 
       final base = _toNum(m['salaryBase']);
@@ -410,7 +395,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
       final fromStr = _dayKey(_range!.start);
       final toStr = _dayKey(_range!.end);
 
-      // بنجيب كل الأنواع (in/out/absent) ونفلتر محليًا — لتجنب اندكس إضافي على type
+      // هنجلب كل الأيام للفترة ونفلتر محليًا حسب النوع
       final qs = await FirebaseFirestore.instance
           .collection('attendance')
           .where('localDay', isGreaterThanOrEqualTo: fromStr)
@@ -418,7 +403,6 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
           .orderBy('localDay')
           .get();
 
-      // خريطة غير قابلة للـ null: userId -> localDay -> {...}
       final Map<String, Map<String, Map<String, dynamic>>> perUser = {};
 
       for (final d in qs.docs) {
@@ -429,7 +413,6 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
         final branchId = (m['branchId'] ?? '').toString();
         final shiftId = (m['shiftId'] ?? '').toString();
 
-        // فلاتر الفرع/الشيفت
         if (_absBranchFilterId != 'all' && branchId != _absBranchFilterId) {
           continue;
         }
@@ -448,11 +431,9 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
             'isAbsent': false,
             'userName': (m['userName'] ?? '').toString(),
             'branchId': branchId,
-            'branchName':
-                (m['branchName'] ?? _branchLabelFor(branchId)).toString(),
+            'branchName': (m['branchName'] ?? _branchLabelFor(branchId)).toString(),
             'shiftId': shiftId,
-            'shiftName':
-                (m['shiftName'] ?? _shiftLabelFor(shiftId)).toString(),
+            'shiftName': (m['shiftName'] ?? _shiftLabelFor(shiftId)).toString(),
           };
         });
 
@@ -462,14 +443,12 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
         if (t == 'absent') perUser[userId]![localDay]!['isAbsent'] = true;
       }
 
-      // بناء الكروت
       final List<_AbsAgg> cards = [];
       final searchTxt = _absSearchCtrl.text.trim().toLowerCase();
 
       perUser.forEach((uid, daysMap) {
         if (daysMap.isEmpty) return;
 
-        // أي يوم كفاية علشان نجيب منه الميتاداتا (اسم/فرع/شيفت)
         final any = daysMap.values.first;
         final userName = (any['userName'] ?? '').toString();
         final branchId = (any['branchId'] ?? '').toString();
@@ -486,19 +465,19 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
           final hasOut = v['hasOut'] == true;
           final isAbs = v['isAbsent'] == true;
 
-          if (isAbs) {
-            absent++;
+          if (hasIn && hasOut) {
+            // present — مفيش مشكلة
           } else if (hasIn && !hasOut) {
             missOut++;
           } else if (!hasIn && hasOut) {
             missIn++;
+          } else if (isAbs) {
+            absent++;
           }
         });
 
-        final hay =
-            '$uid $userName $branchName $shiftName'.toLowerCase();
+        final hay = '$uid $userName $branchName $shiftName'.toLowerCase();
         if (searchTxt.isNotEmpty && !hay.contains(searchTxt)) return;
-
         if (absent == 0 && missIn == 0 && missOut == 0) return;
 
         cards.add(_AbsAgg(
@@ -514,7 +493,6 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
           ..missingOut = missOut);
       });
 
-      // ترتيب: الأكثر مشاكل → الاسم
       cards.sort((a, b) {
         final ca = (b.absent + b.missingIn + b.missingOut)
             .compareTo(a.absent + a.missingIn + a.missingOut);
@@ -534,7 +512,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
     }
   }
 
-  // تفاصيل موظف: تحميل وفتح BottomSheet (يعرض أوقات IN/OUT أو علامات مفقود)
+  // فتح تفاصيل موظف
   Future<void> _openUserExceptions(_AbsAgg a) async {
     if (_range == null) return;
 
@@ -548,7 +526,6 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
         .orderBy('localDay')
         .get();
 
-    // خريطة: localDay -> flags + times
     final Map<String, Map<String, dynamic>> days = {};
 
     for (final d in qs.docs) {
@@ -570,16 +547,12 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
       if (t == 'in') {
         days[localDay]!['hasIn'] = true;
         final ts = m['at'];
-        if (ts is Timestamp) {
-          days[localDay]!['inAt'] = ts.toDate();
-        }
+        if (ts is Timestamp) days[localDay]!['inAt'] = ts.toDate();
       }
       if (t == 'out') {
         days[localDay]!['hasOut'] = true;
         final ts = m['at'];
-        if (ts is Timestamp) {
-          days[localDay]!['outAt'] = ts.toDate();
-        }
+        if (ts is Timestamp) days[localDay]!['outAt'] = ts.toDate();
       }
       if (t == 'absent') {
         days[localDay]!['isAbsent'] = true;
@@ -639,13 +612,14 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
       helpText: title,
       initialTime: const TimeOfDay(hour: 9, minute: 0),
     );
+    // ملاحظة: ممكن تستخدم intl لو عايز تنسيق 12/24 أو Locale
   }
 
   DateTime _combineDateTime(DateTime date, TimeOfDay tod) {
     return DateTime(date.year, date.month, date.day, tod.hour, tod.minute);
   }
 
-  // إضافة IN/OUT — الآن تقبل وقت مخصّص (إن وُجد)
+  // إضافة IN/OUT — تقبل وقت مخصّص (إن وُجد) + حذف absent
   Future<void> _addPunch(
     _AbsDetailRow r, {
     bool addIn = false,
@@ -653,7 +627,6 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
     DateTime? inAtOverride,
     DateTime? outAtOverride,
   }) async {
-    // الافتراض (لو مفيش override)
     final defaultIn  = DateTime(r.date.year, r.date.month, r.date.day, 9, 0);
     final defaultOut = DateTime(r.date.year, r.date.month, r.date.day, 17, 0);
 
@@ -697,10 +670,14 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
     }
 
     await batch.commit();
+
+    // احذف مستند الغياب (لو موجود)
+    try {
+      await col.doc('${r.uid}_${r.localDay}_absent').delete();
+    } catch (_) {}
   }
 
   Future<void> _markPresentDay(_AbsDetailRow r) async {
-    // تقدر لاحقًا تخليه يسأل عن وقتين مخصصين لو حبيت
     await _addPunch(r, addIn: true, addOut: true);
     await _deleteAbsentDoc(r, silent: true);
   }
@@ -716,19 +693,15 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
     }
   }
 
-  // ===== Backfill: إنشاء مستندات غياب لأيام العمل الفارغة =====
+  // Backfill
   Future<void> _backfillAllAbsencesForRange() async {
     if (_range == null) return;
     setState(() => _absLoading = true);
 
     try {
-      // هات كل الموظفين الـ approved (وفلتر فرع/شيفت لو متحدد)
       final users = await _getApprovedUsersFiltered();
-
-      // امشي على كل موظف وكل يوم
       for (final u in users) {
         final uid = u.id;
-
         await _backfillAbsents(
           uid: uid,
           from: DateTime(_range!.start.year, _range!.start.month, _range!.start.day),
@@ -737,7 +710,6 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
           holidays: _holidays,
         );
       }
-
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Backfill completed')),
@@ -759,18 +731,15 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
     var q = FirebaseFirestore.instance
         .collection('users')
         .where('status', isEqualTo: 'approved');
-
     final qs = await q.get();
     final list = qs.docs.where((d) {
       final m = d.data();
       final br = (m['primaryBranchId'] ?? m['branchId'] ?? '').toString();
       final sh = (m['assignedShiftId'] ?? m['shiftId'] ?? '').toString();
-
       if (_absBranchFilterId != 'all' && br != _absBranchFilterId) return false;
       if (_absShiftFilterId != 'all' && sh != _absShiftFilterId) return false;
       return true;
     }).toList();
-
     return list;
   }
 
@@ -792,7 +761,6 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
       final isHoliday = holidays.contains(dayKey);
       if (isWeekend || isHoliday) continue;
 
-      // هل فيه أي in/out/absent لهذا اليوم؟
       final qs = await col
           .where('userId', isEqualTo: uid)
           .where('localDay', isEqualTo: dayKey)
@@ -848,9 +816,9 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
             child: TabBarView(
               controller: _tab,
               children: [
-                _usersTab(), // Pending
-                _usersTab(), // Approved
-                _absencesTab(), // Absences (Cards + Detail)
+                _usersTab(),
+                _usersTab(),
+                _absencesTab(),
               ],
             ),
           ),
@@ -868,19 +836,16 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
           return const Center(child: CircularProgressIndicator());
         }
         final docs =
-            s.data?.docs.where((d) => _matchesFilters(d.data())).toList() ??
-                [];
+            s.data?.docs.where((d) => _matchesFilters(d.data())).toList() ?? [];
         if (docs.isEmpty) {
           return const Center(child: Text('No users found.'));
         }
 
-        // نجمع حسب الفرع
         final byBranch =
             <String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>{};
         for (final d in docs) {
           final m = d.data();
-          final brId =
-              (m['primaryBranchId'] ?? m['branchId'] ?? '').toString();
+          final brId = (m['primaryBranchId'] ?? m['branchId'] ?? '').toString();
           byBranch.putIfAbsent(brId, () => []).add(d);
         }
 
@@ -941,8 +906,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
                 items: kRoles
                     .map((r) => DropdownMenuItem(
                           value: r,
-                          child:
-                              Text(r == 'all' ? 'All roles' : r),
+                          child: Text(r == 'all' ? 'All roles' : r),
                         ))
                     .toList(),
                 onChanged: (v) => setState(() => _roleFilter = v ?? 'all'),
@@ -952,30 +916,26 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
               child: DropdownButton<String>(
                 value: _branchFilterId,
                 items: [
-                  const DropdownMenuItem(
-                      value: 'all', child: Text('All branches')),
+                  const DropdownMenuItem(value: 'all', child: Text('All branches')),
                   ..._branches.map((b) => DropdownMenuItem(
                         value: b.id,
                         child: Text((b.data()['name'] ?? '').toString()),
                       )),
                 ],
-                onChanged: (v) =>
-                    setState(() => _branchFilterId = v ?? 'all'),
+                onChanged: (v) => setState(() => _branchFilterId = v ?? 'all'),
               ),
             ),
             DropdownButtonHideUnderline(
               child: DropdownButton<String>(
                 value: _shiftFilterId,
                 items: [
-                  const DropdownMenuItem(
-                      value: 'all', child: Text('All shifts')),
+                  const DropdownMenuItem(value: 'all', child: Text('All shifts')),
                   ..._shifts.map((s) => DropdownMenuItem(
                         value: s.id,
                         child: Text((s.data()['name'] ?? '').toString()),
                       )),
                 ],
-                onChanged: (v) =>
-                    setState(() => _shiftFilterId = v ?? 'all'),
+                onChanged: (v) => setState(() => _shiftFilterId = v ?? 'all'),
               ),
             ),
             const SizedBox(width: 8),
@@ -1001,8 +961,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
           child: _absLoading
               ? const Center(child: CircularProgressIndicator())
               : _absCards.isEmpty
-                  ? const Center(
-                      child: Text('No exceptions for selected filters.'))
+                  ? const Center(child: Text('No exceptions for selected filters.'))
                   : Padding(
                       padding: const EdgeInsets.all(8),
                       child: isWide
@@ -1011,15 +970,12 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
                               mainAxisSpacing: 8,
                               crossAxisSpacing: 8,
                               childAspectRatio: 3.4,
-                              children:
-                                  _absCards.map(_userAggCard).toList(),
+                              children: _absCards.map(_userAggCard).toList(),
                             )
                           : ListView.separated(
                               itemCount: _absCards.length,
-                              separatorBuilder: (_, __) =>
-                                  const SizedBox(height: 8),
-                              itemBuilder: (_, i) =>
-                                  _userAggCard(_absCards[i]),
+                              separatorBuilder: (_, __) => const SizedBox(height: 8),
+                              itemBuilder: (_, i) => _userAggCard(_absCards[i]),
                             ),
                     ),
         ),
@@ -1057,30 +1013,26 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
               child: DropdownButton<String>(
                 value: _absBranchFilterId,
                 items: [
-                  const DropdownMenuItem(
-                      value: 'all', child: Text('All branches')),
+                  const DropdownMenuItem(value: 'all', child: Text('All branches')),
                   ..._branches.map((b) => DropdownMenuItem(
                         value: b.id,
                         child: Text((b.data()['name'] ?? '').toString()),
                       )),
                 ],
-                onChanged: (v) =>
-                    setState(() => _absBranchFilterId = v ?? 'all'),
+                onChanged: (v) => setState(() => _absBranchFilterId = v ?? 'all'),
               ),
             ),
             DropdownButtonHideUnderline(
               child: DropdownButton<String>(
                 value: _absShiftFilterId,
                 items: [
-                  const DropdownMenuItem(
-                      value: 'all', child: Text('All shifts')),
+                  const DropdownMenuItem(value: 'all', child: Text('All shifts')),
                   ..._shifts.map((s) => DropdownMenuItem(
                         value: s.id,
                         child: Text((s.data()['name'] ?? '').toString()),
                       )),
                 ],
-                onChanged: (v) =>
-                    setState(() => _absShiftFilterId = v ?? 'all'),
+                onChanged: (v) => setState(() => _absShiftFilterId = v ?? 'all'),
               ),
             ),
             SizedBox(
@@ -1112,7 +1064,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
                         builder: (_) => AlertDialog(
                           title: const Text('Backfill absences'),
                           content: const Text(
-                              'سيتم إنشاء سجلات غياب (absent) لأي يوم عمل ليس به IN ولا OUT في الفترة المختارة. متأكد؟'),
+                              'سيتم إنشاء سجلات غياب لأي يوم عمل بلا IN/OUT في الفترة المختارة. هل تريد المتابعة؟'),
                           actions: [
                             TextButton(
                                 onPressed: () => Navigator.pop(context, false),
@@ -1146,10 +1098,8 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
           runSpacing: 6,
           children: [
             Chip(label: Text('Code: ${a.uid}')),
-            if (a.branchName.isNotEmpty)
-              Chip(label: Text('Branch: ${a.branchName}')),
-            if (a.shiftName.isNotEmpty)
-              Chip(label: Text('Shift: ${a.shiftName}')),
+            if (a.branchName.isNotEmpty) Chip(label: Text('Branch: ${a.branchName}')),
+            if (a.shiftName.isNotEmpty) Chip(label: Text('Shift: ${a.shiftName}')),
             Chip(
               label: Text('Absent: ${a.absent}'),
               backgroundColor: Colors.red,
@@ -1191,21 +1141,20 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
         statusText = 'Present';
     }
 
-    // شارات أوقات IN/OUT أو مفقود
     final inChip = r.hasIn && r.inAt != null
         ? Chip(label: Text('IN ${_fmtTime(r.inAt!)}'))
-        : Chip(
-            label: const Text('Missing IN'),
+        : const Chip(
+            label: Text('Missing IN'),
             backgroundColor: Colors.orange,
-            labelStyle: const TextStyle(color: Colors.white),
+            labelStyle: TextStyle(color: Colors.white),
           );
 
     final outChip = r.hasOut && r.outAt != null
         ? Chip(label: Text('OUT ${_fmtTime(r.outAt!)}'))
-        : Chip(
-            label: const Text('Missing OUT'),
+        : const Chip(
+            label: Text('Missing OUT'),
             backgroundColor: Colors.orange,
-            labelStyle: const TextStyle(color: Colors.white),
+            labelStyle: TextStyle(color: Colors.white),
           );
 
     return ListTile(
@@ -1233,6 +1182,11 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
               if (tod != null) {
                 final when = _combineDateTime(r.date, tod);
                 await _addPunch(r, addIn: true, inAtOverride: when);
+                // تحديث محلي فوري
+                r.hasIn = true;
+                r.inAt = when;
+                r.isAbsent = false;
+                setState(() {});
               }
               break;
             }
@@ -1241,31 +1195,38 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
               if (tod != null) {
                 final when = _combineDateTime(r.date, tod);
                 await _addPunch(r, addOut: true, outAtOverride: when);
+                r.hasOut = true;
+                r.outAt = when;
+                r.isAbsent = false;
+                setState(() {});
               }
               break;
             }
             case 'mark_present':
-              await _markPresentDay(r); // تقدر نخليها تسأل على وقتين لو حبيت
+              await _markPresentDay(r);
+              // تحديث محلي
+              r.hasIn = true;
+              r.hasOut = true;
+              r.inAt ??= DateTime(r.date.year, r.date.month, r.date.day, 9, 0);
+              r.outAt ??= DateTime(r.date.year, r.date.month, r.date.day, 17, 0);
+              r.isAbsent = false;
+              setState(() {});
               break;
             case 'delete_absent':
               await _deleteAbsentDoc(r);
+              r.isAbsent = false;
+              setState(() {});
               break;
           }
-          if (mounted) setState(() {});
         },
         itemBuilder: (context) => [
           if (!r.hasIn)
-            const PopupMenuItem(
-                value: 'fix_in', child: Text('Fix IN (اختر الوقت)')),
+            const PopupMenuItem(value: 'fix_in', child: Text('Fix IN (اختر الوقت)')),
           if (!r.hasOut)
-            const PopupMenuItem(
-                value: 'fix_out', child: Text('Fix OUT (اختر الوقت)')),
-          const PopupMenuItem(
-              value: 'mark_present',
-              child: Text('Mark Present (create IN/OUT)')),
+            const PopupMenuItem(value: 'fix_out', child: Text('Fix OUT (اختر الوقت)')),
+          const PopupMenuItem(value: 'mark_present', child: Text('Mark Present (create IN/OUT)')),
           if (r.isAbsent)
-            const PopupMenuItem(
-                value: 'delete_absent', child: Text('Delete absence')),
+            const PopupMenuItem(value: 'delete_absent', child: Text('Delete absence')),
         ],
       ),
     );
@@ -1344,22 +1305,11 @@ class _UserCard extends StatelessWidget {
               spacing: 6,
               runSpacing: 4,
               children: [
-                Chip(
-                    label: Text('Status: $status'),
-                    avatar: const Icon(Icons.verified, size: 16)),
-                Chip(
-                    label: Text('Role: $role'),
-                    avatar: const Icon(Icons.badge, size: 16)),
-                Chip(
-                    label: Text('Branch: ${brName.isEmpty ? '—' : brName}'),
-                    avatar: const Icon(Icons.store, size: 16)),
-                Chip(
-                    label: Text('Shift: ${shName.isEmpty ? '—' : shName}'),
-                    avatar: const Icon(Icons.schedule, size: 16)),
-                if (allowAny)
-                  const Chip(
-                      label: Text('Any branch'),
-                      avatar: Icon(Icons.public, size: 16)),
+                Chip(label: Text('Status: $status'), avatar: const Icon(Icons.verified, size: 16)),
+                Chip(label: Text('Role: $role'), avatar: const Icon(Icons.badge, size: 16)),
+                Chip(label: Text('Branch: ${brName.isEmpty ? '—' : brName}'), avatar: const Icon(Icons.store, size: 16)),
+                Chip(label: Text('Shift: ${shName.isEmpty ? '—' : shName}'), avatar: const Icon(Icons.schedule, size: 16)),
+                if (allowAny) const Chip(label: Text('Any branch'), avatar: Icon(Icons.public, size: 16)),
               ],
             ),
             const SizedBox(height: 6),
@@ -1402,8 +1352,7 @@ class _UserCard extends StatelessWidget {
                 await onAssignShift(uid);
                 break;
               case 'toggle_any':
-                await onToggleAllowAnyBranch(
-                    uid, !(data['allowAnyBranch'] == true));
+                await onToggleAllowAnyBranch(uid, !(data['allowAnyBranch'] == true));
                 break;
               case 'edit_payroll':
                 await onEditPayroll(uid, data);
@@ -1414,20 +1363,14 @@ class _UserCard extends StatelessWidget {
             PopupMenuItem(value: 'approve', child: Text('Mark Approved')),
             PopupMenuItem(value: 'pending', child: Text('Mark Pending')),
             PopupMenuDivider(),
-            PopupMenuItem(
-                value: 'role_employee', child: Text('Role: Employee')),
-            PopupMenuItem(
-                value: 'role_supervisor', child: Text('Role: Supervisor')),
-            PopupMenuItem(
-                value: 'role_manager',
-                child: Text('Role: Branch Manager')),
+            PopupMenuItem(value: 'role_employee', child: Text('Role: Employee')),
+            PopupMenuItem(value: 'role_supervisor', child: Text('Role: Supervisor')),
+            PopupMenuItem(value: 'role_manager', child: Text('Role: Branch Manager')),
             PopupMenuItem(value: 'role_admin', child: Text('Role: Admin')),
             PopupMenuDivider(),
-            PopupMenuItem(
-                value: 'assign_branch', child: Text('Assign Branch')),
+            PopupMenuItem(value: 'assign_branch', child: Text('Assign Branch')),
             PopupMenuItem(value: 'assign_shift', child: Text('Assign Shift')),
-            PopupMenuItem(
-                value: 'toggle_any', child: Text('Toggle Allow Any Branch')),
+            PopupMenuItem(value: 'toggle_any', child: Text('Toggle Allow Any Branch')),
             PopupMenuDivider(),
             PopupMenuItem(value: 'edit_payroll', child: Text('Edit Payroll')),
           ],
@@ -1446,7 +1389,7 @@ class _AbsAgg {
   final String shiftId;
   final String shiftName;
   int absent = 0;
-  int missingIn = 0; // عنده OUT بس مفيش IN
+  int missingIn = 0;  // عنده OUT بس مفيش IN
   int missingOut = 0; // عنده IN بس مفيش OUT
 
   _AbsAgg({
@@ -1464,13 +1407,13 @@ class _AbsDetailRow {
   final String userName;
   final String branchName;
   final String shiftName;
-  final DateTime date;
-  final String localDay;
-  final bool hasIn;
-  final bool hasOut;
-  final bool isAbsent;
-  final DateTime? inAt;
-  final DateTime? outAt;
+  DateTime date;
+  String localDay;
+  bool hasIn;
+  bool hasOut;
+  bool isAbsent;
+  DateTime? inAt;
+  DateTime? outAt;
 
   _AbsDetailRow({
     required this.uid,
@@ -1486,12 +1429,13 @@ class _AbsDetailRow {
     required this.outAt,
   });
 
+  // أولوية الحالة: present > incomplete > absent
   String get status {
-    if (isAbsent) return 'absent';
+    if (hasIn && hasOut) return 'present';
     if (hasIn && !hasOut) return 'incomplete_out';
     if (!hasIn && hasOut) return 'incomplete_in';
-    if (hasIn && hasOut) return 'present';
-    return 'absent'; // fallback لو مفيش أي شيء
+    if (isAbsent) return 'absent';
+    return 'absent';
   }
 }
 
@@ -1527,12 +1471,9 @@ class _SelectDialogState extends State<_SelectDialog> {
         decoration: const InputDecoration(border: OutlineInputBorder()),
       ),
       actions: [
-        TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel')),
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
         FilledButton(
-          onPressed:
-              _selected == null ? null : () => Navigator.pop(context, _selected),
+          onPressed: _selected == null ? null : () => Navigator.pop(context, _selected),
           child: const Text('Save'),
         ),
       ],
