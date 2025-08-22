@@ -632,58 +632,82 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
     await _loadAbsencesData();
   }
 
-  // إضافة IN/OUT سريع (09:00/17:00)
-  Future<void> _addPunch(_AbsDetailRow r,
-      {bool addIn = false, bool addOut = false}) async {
-    final inAt = DateTime(r.date.year, r.date.month, r.date.day, 9, 0);
-    final outAt = DateTime(r.date.year, r.date.month, r.date.day, 17, 0);
+  // ======== وقت مخصص: Pickers + دمج التاريخ بالوقت ========
+  Future<TimeOfDay?> _pickTime(BuildContext context, {required String title}) async {
+    return showTimePicker(
+      context: context,
+      helpText: title,
+      initialTime: const TimeOfDay(hour: 9, minute: 0),
+    );
+  }
+
+  DateTime _combineDateTime(DateTime date, TimeOfDay tod) {
+    return DateTime(date.year, date.month, date.day, tod.hour, tod.minute);
+  }
+
+  // إضافة IN/OUT — الآن تقبل وقت مخصّص (إن وُجد)
+  Future<void> _addPunch(
+    _AbsDetailRow r, {
+    bool addIn = false,
+    bool addOut = false,
+    DateTime? inAtOverride,
+    DateTime? outAtOverride,
+  }) async {
+    // الافتراض (لو مفيش override)
+    final defaultIn  = DateTime(r.date.year, r.date.month, r.date.day, 9, 0);
+    final defaultOut = DateTime(r.date.year, r.date.month, r.date.day, 17, 0);
+
+    final inAt  = inAtOverride  ?? defaultIn;
+    final outAt = outAtOverride ?? defaultOut;
+
     final col = FirebaseFirestore.instance.collection('attendance');
     final batch = FirebaseFirestore.instance.batch();
 
     if (addIn) {
       batch.set(
-          col.doc('${r.uid}_${r.localDay}_in'),
-          {
-            'userId': r.uid,
-            'userName': r.userName,
-            'branchName': r.branchName,
-            'shiftName': r.shiftName,
-            'localDay': r.localDay,
-            'type': 'in',
-            'at': Timestamp.fromDate(inAt),
-            'createdAt': FieldValue.serverTimestamp(),
-          },
-          SetOptions(merge: true));
+        col.doc('${r.uid}_${r.localDay}_in'),
+        {
+          'userId': r.uid,
+          'userName': r.userName,
+          'branchName': r.branchName,
+          'shiftName': r.shiftName,
+          'localDay': r.localDay,
+          'type': 'in',
+          'at': Timestamp.fromDate(inAt),
+          'createdAt': FieldValue.serverTimestamp(),
+        },
+        SetOptions(merge: true),
+      );
     }
     if (addOut) {
       batch.set(
-          col.doc('${r.uid}_${r.localDay}_out'),
-          {
-            'userId': r.uid,
-            'userName': r.userName,
-            'branchName': r.branchName,
-            'shiftName': r.shiftName,
-            'localDay': r.localDay,
-            'type': 'out',
-            'at': Timestamp.fromDate(outAt),
-            'createdAt': FieldValue.serverTimestamp(),
-          },
-          SetOptions(merge: true));
+        col.doc('${r.uid}_${r.localDay}_out'),
+        {
+          'userId': r.uid,
+          'userName': r.userName,
+          'branchName': r.branchName,
+          'shiftName': r.shiftName,
+          'localDay': r.localDay,
+          'type': 'out',
+          'at': Timestamp.fromDate(outAt),
+          'createdAt': FieldValue.serverTimestamp(),
+        },
+        SetOptions(merge: true),
+      );
     }
 
     await batch.commit();
   }
 
   Future<void> _markPresentDay(_AbsDetailRow r) async {
+    // تقدر لاحقًا تخليه يسأل عن وقتين مخصصين لو حبيت
     await _addPunch(r, addIn: true, addOut: true);
     await _deleteAbsentDoc(r, silent: true);
   }
 
-  Future<void> _deleteAbsentDoc(_AbsDetailRow r,
-      {bool silent = false}) async {
+  Future<void> _deleteAbsentDoc(_AbsDetailRow r, {bool silent = false}) async {
     final id = '${r.uid}_${r.localDay}_absent';
-    final ref =
-        FirebaseFirestore.instance.collection('attendance').doc(id);
+    final ref = FirebaseFirestore.instance.collection('attendance').doc(id);
     final snap = await ref.get();
     if (snap.exists) await ref.delete();
     if (!silent && mounted) {
@@ -736,7 +760,6 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
         .collection('users')
         .where('status', isEqualTo: 'approved');
 
-    // مبدئيًا مش هنفلتر في الكويري عشان نتجنب اندكسات إضافية
     final qs = await q.get();
     final list = qs.docs.where((d) {
       final m = d.data();
@@ -1205,14 +1228,24 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
       trailing: PopupMenuButton<String>(
         onSelected: (v) async {
           switch (v) {
-            case 'fix_in':
-              await _addPunch(r, addIn: true);
+            case 'fix_in': {
+              final tod = await _pickTime(context, title: 'اختر وقت الدخول (IN)');
+              if (tod != null) {
+                final when = _combineDateTime(r.date, tod);
+                await _addPunch(r, addIn: true, inAtOverride: when);
+              }
               break;
-            case 'fix_out':
-              await _addPunch(r, addOut: true);
+            }
+            case 'fix_out': {
+              final tod = await _pickTime(context, title: 'اختر وقت الخروج (OUT)');
+              if (tod != null) {
+                final when = _combineDateTime(r.date, tod);
+                await _addPunch(r, addOut: true, outAtOverride: when);
+              }
               break;
+            }
             case 'mark_present':
-              await _markPresentDay(r);
+              await _markPresentDay(r); // تقدر نخليها تسأل على وقتين لو حبيت
               break;
             case 'delete_absent':
               await _deleteAbsentDoc(r);
@@ -1223,10 +1256,10 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
         itemBuilder: (context) => [
           if (!r.hasIn)
             const PopupMenuItem(
-                value: 'fix_in', child: Text('Fix IN (09:00)')),
+                value: 'fix_in', child: Text('Fix IN (اختر الوقت)')),
           if (!r.hasOut)
             const PopupMenuItem(
-                value: 'fix_out', child: Text('Fix OUT (17:00)')),
+                value: 'fix_out', child: Text('Fix OUT (اختر الوقت)')),
           const PopupMenuItem(
               value: 'mark_present',
               child: Text('Mark Present (create IN/OUT)')),
