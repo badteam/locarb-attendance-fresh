@@ -54,6 +54,13 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
   // (غير مستخدمة مباشرة لكن نحتفظ بها لو احتجنا لاحقاً)
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _usersApproved = [];
 
+  // إعدادات الويك إند/العطلات للـ backfill (عدّلها حسب بلدك)
+  // Monday=1 ... Sunday=7
+  final Set<int> _weekendDays = {6, 7}; // سبت/أحد افتراضيًا
+  final Set<String> _holidays = {
+    // أمثلة: '2025-01-01', '2025-08-15'
+  };
+
   @override
   void initState() {
     super.initState();
@@ -527,7 +534,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
     }
   }
 
-  // تفاصيل موظف: تحميل وفتح BottomSheet
+  // تفاصيل موظف: تحميل وفتح BottomSheet (يعرض أوقات IN/OUT أو علامات مفقود)
   Future<void> _openUserExceptions(_AbsAgg a) async {
     if (_range == null) return;
 
@@ -541,7 +548,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
         .orderBy('localDay')
         .get();
 
-    // خريطة غير قابلة للـ null: localDay -> flags
+    // خريطة: localDay -> flags + times
     final Map<String, Map<String, dynamic>> days = {};
 
     for (final d in qs.docs) {
@@ -555,12 +562,28 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
             'hasIn': false,
             'hasOut': false,
             'isAbsent': false,
+            'inAt': null,
+            'outAt': null,
           });
 
       final t = (m['type'] ?? '').toString();
-      if (t == 'in') days[localDay]!['hasIn'] = true;
-      if (t == 'out') days[localDay]!['hasOut'] = true;
-      if (t == 'absent') days[localDay]!['isAbsent'] = true;
+      if (t == 'in') {
+        days[localDay]!['hasIn'] = true;
+        final ts = m['at'];
+        if (ts is Timestamp) {
+          days[localDay]!['inAt'] = ts.toDate();
+        }
+      }
+      if (t == 'out') {
+        days[localDay]!['hasOut'] = true;
+        final ts = m['at'];
+        if (ts is Timestamp) {
+          days[localDay]!['outAt'] = ts.toDate();
+        }
+      }
+      if (t == 'absent') {
+        days[localDay]!['isAbsent'] = true;
+      }
     }
 
     final details = <_AbsDetailRow>[];
@@ -581,6 +604,8 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
         hasIn: v['hasIn'] == true,
         hasOut: v['hasOut'] == true,
         isAbsent: v['isAbsent'] == true,
+        inAt: v['inAt'] is DateTime ? v['inAt'] as DateTime : null,
+        outAt: v['outAt'] is DateTime ? v['outAt'] as DateTime : null,
       ));
     });
 
@@ -664,6 +689,106 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
     if (!silent && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Absence deleted')));
+    }
+  }
+
+  // ===== Backfill: إنشاء مستندات غياب لأيام العمل الفارغة =====
+  Future<void> _backfillAllAbsencesForRange() async {
+    if (_range == null) return;
+    setState(() => _absLoading = true);
+
+    try {
+      // هات كل الموظفين الـ approved (وفلتر فرع/شيفت لو متحدد)
+      final users = await _getApprovedUsersFiltered();
+
+      // امشي على كل موظف وكل يوم
+      for (final u in users) {
+        final uid = u.id;
+
+        await _backfillAbsents(
+          uid: uid,
+          from: DateTime(_range!.start.year, _range!.start.month, _range!.start.day),
+          to: DateTime(_range!.end.year, _range!.end.month, _range!.end.day),
+          weekendDays: _weekendDays,
+          holidays: _holidays,
+        );
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Backfill completed')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Backfill failed: $e')),
+        );
+      }
+    } finally {
+      await _loadAbsencesData();
+    }
+  }
+
+  Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>>
+      _getApprovedUsersFiltered() async {
+    var q = FirebaseFirestore.instance
+        .collection('users')
+        .where('status', isEqualTo: 'approved');
+
+    // مبدئيًا مش هنفلتر في الكويري عشان نتجنب اندكسات إضافية
+    final qs = await q.get();
+    final list = qs.docs.where((d) {
+      final m = d.data();
+      final br = (m['primaryBranchId'] ?? m['branchId'] ?? '').toString();
+      final sh = (m['assignedShiftId'] ?? m['shiftId'] ?? '').toString();
+
+      if (_absBranchFilterId != 'all' && br != _absBranchFilterId) return false;
+      if (_absShiftFilterId != 'all' && sh != _absShiftFilterId) return false;
+      return true;
+    }).toList();
+
+    return list;
+  }
+
+  Future<void> _backfillAbsents({
+    required String uid,
+    required DateTime from,
+    required DateTime to,
+    required Set<int> weekendDays,
+    required Set<String> holidays,
+  }) async {
+    final col = FirebaseFirestore.instance.collection('attendance');
+
+    for (var d = DateTime(from.year, from.month, from.day);
+        !d.isAfter(to);
+        d = d.add(const Duration(days: 1))) {
+      final dayKey = _dayKey(d);
+
+      final isWeekend = weekendDays.contains(d.weekday);
+      final isHoliday = holidays.contains(dayKey);
+      if (isWeekend || isHoliday) continue;
+
+      // هل فيه أي in/out/absent لهذا اليوم؟
+      final qs = await col
+          .where('userId', isEqualTo: uid)
+          .where('localDay', isEqualTo: dayKey)
+          .get();
+
+      final hasInOrOut = qs.docs.any((x) {
+        final t = (x['type'] ?? '').toString();
+        return t == 'in' || t == 'out';
+      });
+      final hasAbsent = qs.docs.any((x) => (x['type'] ?? '') == 'absent');
+
+      if (!hasInOrOut && !hasAbsent) {
+        await col.doc('${uid}_${dayKey}_absent').set({
+          'userId': uid,
+          'localDay': dayKey,
+          'type': 'absent',
+          'createdAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+      }
     }
   }
 
@@ -954,6 +1079,34 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
               icon: const Icon(Icons.search),
               label: const Text('Apply'),
             ),
+            const SizedBox(width: 12),
+            FilledButton.icon(
+              onPressed: _absLoading
+                  ? null
+                  : () async {
+                      final ok = await showDialog<bool>(
+                        context: context,
+                        builder: (_) => AlertDialog(
+                          title: const Text('Backfill absences'),
+                          content: const Text(
+                              'سيتم إنشاء سجلات غياب (absent) لأي يوم عمل ليس به IN ولا OUT في الفترة المختارة. متأكد؟'),
+                          actions: [
+                            TextButton(
+                                onPressed: () => Navigator.pop(context, false),
+                                child: const Text('Cancel')),
+                            FilledButton(
+                                onPressed: () => Navigator.pop(context, true),
+                                child: const Text('Proceed')),
+                          ],
+                        ),
+                      );
+                      if (ok == true) {
+                        await _backfillAllAbsencesForRange();
+                      }
+                    },
+              icon: const Icon(Icons.build),
+              label: const Text('Backfill absences'),
+            ),
           ],
         ),
       ),
@@ -999,30 +1152,52 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
   }
 
   Widget _detailTile(_AbsDetailRow r) {
-    Color c;
-    String t = r.status;
+    // لون الحالة العامة
+    Color statusColor;
+    String statusText = r.status;
     switch (r.status) {
       case 'absent':
-        c = Colors.red;
+        statusColor = Colors.red;
         break;
       case 'incomplete_in':
       case 'incomplete_out':
-        c = Colors.orange;
+        statusColor = Colors.orange;
         break;
       default:
-        c = Colors.grey;
+        statusColor = Colors.green;
+        statusText = 'Present';
     }
+
+    // شارات أوقات IN/OUT أو مفقود
+    final inChip = r.hasIn && r.inAt != null
+        ? Chip(label: Text('IN ${_fmtTime(r.inAt!)}'))
+        : Chip(
+            label: const Text('Missing IN'),
+            backgroundColor: Colors.orange,
+            labelStyle: const TextStyle(color: Colors.white),
+          );
+
+    final outChip = r.hasOut && r.outAt != null
+        ? Chip(label: Text('OUT ${_fmtTime(r.outAt!)}'))
+        : Chip(
+            label: const Text('Missing OUT'),
+            backgroundColor: Colors.orange,
+            labelStyle: const TextStyle(color: Colors.white),
+          );
 
     return ListTile(
       title: Text(_fmtD(r.date)),
       subtitle: Wrap(
         spacing: 8,
+        runSpacing: 6,
         children: [
           Chip(
-            label: Text(t),
-            backgroundColor: c,
+            label: Text(statusText),
+            backgroundColor: statusColor,
             labelStyle: const TextStyle(color: Colors.white),
           ),
+          inChip,
+          outChip,
           Chip(label: Text('Branch: ${r.branchName}')),
           Chip(label: Text('Shift: ${r.shiftName}')),
         ],
@@ -1065,6 +1240,12 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
 
   String _fmtD(DateTime d) =>
       '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+  String _fmtTime(DateTime t) {
+    final hh = t.hour.toString().padLeft(2, '0');
+    final mm = t.minute.toString().padLeft(2, '0');
+    return '$hh:$mm';
+  }
 }
 
 // ========== USER CARD ==========
@@ -1255,6 +1436,8 @@ class _AbsDetailRow {
   final bool hasIn;
   final bool hasOut;
   final bool isAbsent;
+  final DateTime? inAt;
+  final DateTime? outAt;
 
   _AbsDetailRow({
     required this.uid,
@@ -1266,13 +1449,16 @@ class _AbsDetailRow {
     required this.hasIn,
     required this.hasOut,
     required this.isAbsent,
+    required this.inAt,
+    required this.outAt,
   });
 
   String get status {
     if (isAbsent) return 'absent';
     if (hasIn && !hasOut) return 'incomplete_out';
     if (!hasIn && hasOut) return 'incomplete_in';
-    return 'present';
+    if (hasIn && hasOut) return 'present';
+    return 'absent'; // fallback لو مفيش أي شيء
   }
 }
 
