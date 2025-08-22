@@ -6,7 +6,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
-// ملاحظة: مفيش AttendanceService هنا. تبويب الغياب هيقرأ مباشرة من attendance.
+// ملاحظة: لا نستخدم AttendanceService هنا. تبويب الغياب يقرأ مباشرة من attendance.
 
 class AdminUsersScreen extends StatefulWidget {
   const AdminUsersScreen({super.key});
@@ -403,7 +403,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
       final fromStr = _dayKey(_range!.start);
       final toStr = _dayKey(_range!.end);
 
-      // بنجيب كل الأنواع (in/out/absent) ونفلتر محليًا — عشان نتجنب اندكس إضافي على type
+      // بنجيب كل الأنواع (in/out/absent) ونفلتر محليًا — لتجنب اندكس إضافي على type
       final qs = await FirebaseFirestore.instance
           .collection('attendance')
           .where('localDay', isGreaterThanOrEqualTo: fromStr)
@@ -411,7 +411,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
           .orderBy('localDay')
           .get();
 
-      // map: userId -> localDay -> {hasIn, hasOut, isAbsent, meta...}
+      // خريطة غير قابلة للـ null: userId -> localDay -> {...}
       final Map<String, Map<String, Map<String, dynamic>>> perUser = {};
 
       for (final d in qs.docs) {
@@ -434,7 +434,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
         if (localDay.isEmpty) continue;
 
         perUser.putIfAbsent(userId, () => {});
-        perUser[userId].putIfAbsent(localDay, () {
+        perUser[userId]!.putIfAbsent(localDay, () {
           return {
             'hasIn': false,
             'hasOut': false,
@@ -450,9 +450,9 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
         });
 
         final t = (m['type'] ?? '').toString();
-        if (t == 'in') perUser[userId][localDay]!['hasIn'] = true;
-        if (t == 'out') perUser[userId][localDay]!['hasOut'] = true;
-        if (t == 'absent') perUser[userId][localDay]!['isAbsent'] = true;
+        if (t == 'in') perUser[userId]![localDay]!['hasIn'] = true;
+        if (t == 'out') perUser[userId]![localDay]!['hasOut'] = true;
+        if (t == 'absent') perUser[userId]![localDay]!['isAbsent'] = true;
       }
 
       // بناء الكروت
@@ -460,15 +460,17 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
       final searchTxt = _absSearchCtrl.text.trim().toLowerCase();
 
       perUser.forEach((uid, daysMap) {
+        if (daysMap.isEmpty) return;
+
         // أي يوم كفاية علشان نجيب منه الميتاداتا (اسم/فرع/شيفت)
-        final any = daysMap.values.isNotEmpty ? daysMap.values.first : null;
-        final userName = (any?['userName'] ?? '').toString();
-        final branchId = (any?['branchId'] ?? '').toString();
+        final any = daysMap.values.first;
+        final userName = (any['userName'] ?? '').toString();
+        final branchId = (any['branchId'] ?? '').toString();
         final branchName =
-            (any?['branchName'] ?? _branchLabelFor(branchId)).toString();
-        final shiftId = (any?['shiftId'] ?? '').toString();
+            (any['branchName'] ?? _branchLabelFor(branchId)).toString();
+        final shiftId = (any['shiftId'] ?? '').toString();
         final shiftName =
-            (any?['shiftName'] ?? _shiftLabelFor(shiftId)).toString();
+            (any['shiftName'] ?? _shiftLabelFor(shiftId)).toString();
 
         int absent = 0, missIn = 0, missOut = 0;
 
@@ -528,6 +530,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
   // تفاصيل موظف: تحميل وفتح BottomSheet
   Future<void> _openUserExceptions(_AbsAgg a) async {
     if (_range == null) return;
+
     final fromStr = _dayKey(_range!.start);
     final toStr = _dayKey(_range!.end);
 
@@ -538,7 +541,9 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
         .orderBy('localDay')
         .get();
 
+    // خريطة غير قابلة للـ null: localDay -> flags
     final Map<String, Map<String, dynamic>> days = {};
+
     for (final d in qs.docs) {
       final m = d.data();
       if ((m['userId'] ?? '').toString() != a.uid) continue;
@@ -561,11 +566,11 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
     final details = <_AbsDetailRow>[];
     days.forEach((ld, v) {
       final parts = ld.split('-');
-      final date = DateTime(
-        int.tryParse(parts[0]) ?? 1970,
-        int.tryParse(parts[1]) ?? 1,
-        int.tryParse(parts[2]) ?? 1,
-      );
+      final y = int.tryParse(parts.elementAt(0)) ?? 1970;
+      final mo = int.tryParse(parts.elementAt(1)) ?? 1;
+      final da = int.tryParse(parts.elementAt(2)) ?? 1;
+      final date = DateTime(y, mo, da);
+
       details.add(_AbsDetailRow(
         uid: a.uid,
         userName: a.userName,
