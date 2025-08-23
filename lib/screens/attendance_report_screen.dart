@@ -1,3 +1,4 @@
+// lib/screens/attendance_report_screen.dart
 import 'dart:typed_data';
 import 'dart:html' as html;
 
@@ -5,8 +6,9 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
-import '../utils/export.dart';         // لو لسه ما عندكش التصدير، تقدر تشيل الجزء بتاعه مؤقتاً
-import '../widgets/main_drawer.dart';  // أو غيّره لو المسار مختلف
+// لو مش محتاج التصدير حالياً، تقدر تشيل import + كل ما يخص _exportExcel
+import '../utils/export.dart';
+import '../widgets/main_drawer.dart';
 
 class AttendanceReportScreen extends StatefulWidget {
   const AttendanceReportScreen({
@@ -20,13 +22,13 @@ class AttendanceReportScreen extends StatefulWidget {
     this.allowEditing = true,
   });
 
-  final String? userId;           // تقرير موظف معيّن (اختياري)
-  final String? userName;         // للعنوان (اختياري)
+  final String? userId;
+  final String? userName;
   final DateTimeRange? initialRange;
-  final String? branchId;         // فلتر مبدئي (اختياري)
-  final String? shiftId;          // فلتر مبدئي (اختياري)
-  final bool onlyExceptions;      // اعرض الاستثناءات فقط
-  final bool allowEditing;        // تمكين تعديل IN/OUT
+  final String? branchId;
+  final String? shiftId;
+  final bool onlyExceptions;
+  final bool allowEditing;
 
   @override
   State<AttendanceReportScreen> createState() => _AttendanceReportScreenState();
@@ -39,7 +41,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   String? _shiftId;
   late bool _onlyEx;
 
-  // كاش أسماء ومراجع
   final Map<String, Map<String, dynamic>> _usersCache = {};
   final Map<String, String> _userNames = {};
   final Map<String, String> _branchNames = {};
@@ -91,7 +92,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   Future<TimeOfDay?> _pickTime(String title) =>
       showTimePicker(context: context, helpText: title, initialTime: const TimeOfDay(hour: 9, minute: 0));
 
-  // حفظ Punch + إزالة أي absent لنفس اليوم — مطابق للـ schema عندك
+  // ========= أهم جزء: الحفظ + حذف أي absent =========
   Future<void> _setPunch({
     required String uid,
     required String localDay,   // YYYY-MM-DD
@@ -106,6 +107,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     final col = FirebaseFirestore.instance.collection('attendance');
     final docId = '${uid}_${localDay}_$type';
 
+    // 1) سجل IN/OUT بنفس الـ schema
     await col.doc(docId).set({
       'userId': uid,
       'userName': userName,
@@ -119,7 +121,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
 
-    // احذف أي absent لنفس اليوم
+    // 2) امسح أي مستند غياب لنفس اليوم/الموظف
     final abs = await col
         .where('userId', isEqualTo: uid)
         .where('localDay', isEqualTo: localDay)
@@ -130,7 +132,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     }
   }
 
-  // تصدير إكسل (يمكنك تعطيله لو مش محتاجه الآن)
+  // (اختياري) تصدير اكسل
   Future<void> _exportExcel() async {
     try {
       Query<Map<String, dynamic>> q = FirebaseFirestore.instance
@@ -203,7 +205,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
         .collection('attendance')
         .where('localDay', isGreaterThanOrEqualTo: _fmtDay(_from))
         .where('localDay', isLessThanOrEqualTo: _fmtDay(_to))
-        .orderBy('localDay', descending: true); // نجيب جميع الأنواع (in/out/absent)
+        .orderBy('localDay', descending: true); // نجيب in/out/absent
 
     return Scaffold(
       appBar: AppBar(
@@ -259,7 +261,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
 
                   final docs = snap.data?.docs ?? [];
 
-                  // فلاتر Client-side
+                  // فلترة بسيطة
                   final filtered = docs.where((d) {
                     final m = d.data();
                     if (widget.userId?.isNotEmpty == true && m['userId'] != widget.userId) return false;
@@ -278,7 +280,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
 
                     final key = '$uid|$day';
                     byUserDay.putIfAbsent(key, () {
-                      // خُد الفرع/الشيفت من السجل أو من user cache
                       final u    = _usersCache[uid] ?? {};
                       final bId  = (m['branchId'] ?? u['primaryBranchId'] ?? u['branchId'] ?? '').toString();
                       final sId  = (m['shiftId']  ?? u['assignedShiftId'] ?? u['shiftId']  ?? '').toString();
