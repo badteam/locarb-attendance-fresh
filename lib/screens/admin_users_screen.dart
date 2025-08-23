@@ -15,11 +15,11 @@ class AdminUsersScreen extends StatefulWidget {
 
 class _AdminUsersScreenState extends State<AdminUsersScreen>
     with SingleTickerProviderStateMixin {
-  late TabController _tab; // 0=pending, 1=approved, 2=absences
-  String get _statusTab =>
-      _tab.index == 0 ? 'pending' : _tab.index == 1 ? 'approved' : 'approved';
+  // 0 = pending, 1 = approved
+  late TabController _tab;
+  String get _statusTab => _tab.index == 0 ? 'pending' : 'approved';
 
-  // ====== فلاتر وبحث (للتبويبين الأولين) ======
+  // فلاتر وبحث
   final _searchCtrl = TextEditingController();
   String _roleFilter = 'all';
   String _branchFilterId = 'all';
@@ -29,7 +29,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _branches = [];
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _shifts = [];
   final Map<String, String> _branchNames = {}; // {branchId: branchName}
-  final Map<String, String> _shiftNames = {}; // {shiftId: shiftName}
+  final Map<String, String> _shiftNames = {};  // {shiftId: shiftName}
 
   static const List<String> kRoles = [
     'all',
@@ -39,47 +39,20 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
     'admin',
   ];
 
-  // ======= حالة تبويب Absences (Cards + Detail) =======
-  DateTimeRange? _range;
-  String _absBranchFilterId = 'all';
-  String _absShiftFilterId = 'all';
-  final _absSearchCtrl = TextEditingController();
-  bool _absLoading = false;
-
-  // كروت الموظفين المجمّعة
-  List<_AbsAgg> _absCards = [];
-
-  // users approved
-  List<QueryDocumentSnapshot<Map<String, dynamic>>> _usersApproved = [];
-
-  // إعدادات ويك إند/عطلات (لتوليد غياب تلقائي اختياريًا)
-  final Set<int> _weekendDays = {6, 7}; // سبت/أحد
-  final Set<String> _holidays = {};
-
   @override
   void initState() {
     super.initState();
-    _tab = TabController(length: 3, vsync: this);
-    _tab.addListener(() {
-      setState(() {});
-      if (_tab.index == 2) _ensureAbsencesInit();
-    });
+    _tab = TabController(length: 2, vsync: this); // شِلنا تبويب الغياب
+    _tab.addListener(() => setState(() {}));
     _loadRefs();
     _loadBranchNamesOnce();
     _loadShiftNamesOnce();
-
-    final now = DateTime.now();
-    _range = DateTimeRange(
-      start: DateTime(now.year, now.month, 1),
-      end: DateTime(now.year, now.month + 1, 0, 23, 59, 59),
-    );
   }
 
   @override
   void dispose() {
     _tab.dispose();
     _searchCtrl.dispose();
-    _absSearchCtrl.dispose();
     super.dispose();
   }
 
@@ -170,8 +143,8 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
       builder: (_) => _SelectDialog(
         title: 'Assign Branch',
         items: _branches
-            .map((b) =>
-                _SelectItem(id: b.id, label: (b.data()['name'] ?? '').toString()))
+            .map((b) => _SelectItem(
+                id: b.id, label: (b.data()['name'] ?? '').toString()))
             .toList(),
       ),
     );
@@ -189,8 +162,8 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
       builder: (_) => _SelectDialog(
         title: 'Assign Shift',
         items: _shifts
-            .map((s) =>
-                _SelectItem(id: s.id, label: (s.data()['name'] ?? '').toString()))
+            .map((s) => _SelectItem(
+                id: s.id, label: (s.data()['name'] ?? '').toString()))
             .toList(),
       ),
     );
@@ -371,454 +344,39 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
 
   String _fmt(num v) => v is int ? v.toString() : v.toStringAsFixed(2);
 
-  // ================== ABSENCES (Cards + Detail) ==================
-  Future<void> _ensureAbsencesInit() async {
-    if (_usersApproved.isEmpty) {
-      final us = await FirebaseFirestore.instance
-          .collection('users')
-          .where('status', isEqualTo: 'approved')
-          .orderBy('fullName')
-          .get();
-      _usersApproved = us.docs;
-    }
-    await _loadAbsencesData();
-  }
-
-  String _dayKey(DateTime d) =>
-      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
-
-  Future<void> _loadAbsencesData() async {
-    if (_range == null) return;
-    setState(() => _absLoading = true);
-
-    try {
-      final fromStr = _dayKey(_range!.start);
-      final toStr = _dayKey(_range!.end);
-
-      // هنجلب كل الأيام للفترة ونفلتر محليًا حسب النوع
-      final qs = await FirebaseFirestore.instance
-          .collection('attendance')
-          .where('localDay', isGreaterThanOrEqualTo: fromStr)
-          .where('localDay', isLessThanOrEqualTo: toStr)
-          .orderBy('localDay')
-          .get();
-
-      final Map<String, Map<String, Map<String, dynamic>>> perUser = {};
-
-      for (final d in qs.docs) {
-        final m = d.data();
-        final userId = (m['userId'] ?? '').toString();
-        if (userId.isEmpty) continue;
-
-        final branchId = (m['branchId'] ?? '').toString();
-        final shiftId = (m['shiftId'] ?? '').toString();
-
-        if (_absBranchFilterId != 'all' && branchId != _absBranchFilterId) {
-          continue;
-        }
-        if (_absShiftFilterId != 'all' && shiftId != _absShiftFilterId) {
-          continue;
-        }
-
-        final localDay = (m['localDay'] ?? '').toString();
-        if (localDay.isEmpty) continue;
-
-        perUser.putIfAbsent(userId, () => {});
-        perUser[userId]!.putIfAbsent(localDay, () {
-          return {
-            'hasIn': false,
-            'hasOut': false,
-            'isAbsent': false,
-            'userName': (m['userName'] ?? '').toString(),
-            'branchId': branchId,
-            'branchName': (m['branchName'] ?? _branchLabelFor(branchId)).toString(),
-            'shiftId': shiftId,
-            'shiftName': (m['shiftName'] ?? _shiftLabelFor(shiftId)).toString(),
-          };
-        });
-
-        final t = (m['type'] ?? '').toString();
-        if (t == 'in') perUser[userId]![localDay]!['hasIn'] = true;
-        if (t == 'out') perUser[userId]![localDay]!['hasOut'] = true;
-        if (t == 'absent') perUser[userId]![localDay]!['isAbsent'] = true;
-      }
-
-      final List<_AbsAgg> cards = [];
-      final searchTxt = _absSearchCtrl.text.trim().toLowerCase();
-
-      perUser.forEach((uid, daysMap) {
-        if (daysMap.isEmpty) return;
-
-        final any = daysMap.values.first;
-        final userName = (any['userName'] ?? '').toString();
-        final branchId = (any['branchId'] ?? '').toString();
-        final branchName =
-            (any['branchName'] ?? _branchLabelFor(branchId)).toString();
-        final shiftId = (any['shiftId'] ?? '').toString();
-        final shiftName =
-            (any['shiftName'] ?? _shiftLabelFor(shiftId)).toString();
-
-        int absent = 0, missIn = 0, missOut = 0;
-
-        daysMap.forEach((_, v) {
-          final hasIn = v['hasIn'] == true;
-          final hasOut = v['hasOut'] == true;
-          final isAbs = v['isAbsent'] == true;
-
-          if (hasIn && hasOut) {
-            // present — مفيش مشكلة
-          } else if (hasIn && !hasOut) {
-            missOut++;
-          } else if (!hasIn && hasOut) {
-            missIn++;
-          } else if (isAbs) {
-            absent++;
-          }
-        });
-
-        final hay = '$uid $userName $branchName $shiftName'.toLowerCase();
-        if (searchTxt.isNotEmpty && !hay.contains(searchTxt)) return;
-        if (absent == 0 && missIn == 0 && missOut == 0) return;
-
-        cards.add(_AbsAgg(
-          uid: uid,
-          userName: userName,
-          branchId: branchId,
-          branchName: branchName,
-          shiftId: shiftId,
-          shiftName: shiftName,
-        )
-          ..absent = absent
-          ..missingIn = missIn
-          ..missingOut = missOut);
-      });
-
-      cards.sort((a, b) {
-        final ca = (b.absent + b.missingIn + b.missingOut)
-            .compareTo(a.absent + a.missingIn + a.missingOut);
-        if (ca != 0) return ca;
-        return (a.userName).compareTo(b.userName);
-      });
-
-      setState(() {
-        _absCards = cards;
-        _absLoading = false;
-      });
-    } catch (e) {
-      setState(() => _absLoading = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Load absences failed: $e')),
-      );
-    }
-  }
-
-  // فتح تفاصيل موظف
-  Future<void> _openUserExceptions(_AbsAgg a) async {
-    if (_range == null) return;
-
-    final fromStr = _dayKey(_range!.start);
-    final toStr = _dayKey(_range!.end);
-
-    final qs = await FirebaseFirestore.instance
-        .collection('attendance')
-        .where('localDay', isGreaterThanOrEqualTo: fromStr)
-        .where('localDay', isLessThanOrEqualTo: toStr)
-        .orderBy('localDay')
-        .get();
-
-    final Map<String, Map<String, dynamic>> days = {};
-
-    for (final d in qs.docs) {
-      final m = d.data();
-      if ((m['userId'] ?? '').toString() != a.uid) continue;
-
-      final localDay = (m['localDay'] ?? '').toString();
-      if (localDay.isEmpty) continue;
-
-      days.putIfAbsent(localDay, () => {
-            'hasIn': false,
-            'hasOut': false,
-            'isAbsent': false,
-            'inAt': null,
-            'outAt': null,
-          });
-
-      final t = (m['type'] ?? '').toString();
-      if (t == 'in') {
-        days[localDay]!['hasIn'] = true;
-        final ts = m['at'];
-        if (ts is Timestamp) days[localDay]!['inAt'] = ts.toDate();
-      }
-      if (t == 'out') {
-        days[localDay]!['hasOut'] = true;
-        final ts = m['at'];
-        if (ts is Timestamp) days[localDay]!['outAt'] = ts.toDate();
-      }
-      if (t == 'absent') {
-        days[localDay]!['isAbsent'] = true;
-      }
-    }
-
-    final details = <_AbsDetailRow>[];
-    days.forEach((ld, v) {
-      final parts = ld.split('-');
-      final y = int.tryParse(parts.elementAt(0)) ?? 1970;
-      final mo = int.tryParse(parts.elementAt(1)) ?? 1;
-      final da = int.tryParse(parts.elementAt(2)) ?? 1;
-      final date = DateTime(y, mo, da);
-
-      details.add(_AbsDetailRow(
-        uid: a.uid,
-        userName: a.userName,
-        branchName: a.branchName,
-        shiftName: a.shiftName,
-        date: date,
-        localDay: ld,
-        hasIn: v['hasIn'] == true,
-        hasOut: v['hasOut'] == true,
-        isAbsent: v['isAbsent'] == true,
-        inAt: v['inAt'] is DateTime ? v['inAt'] as DateTime : null,
-        outAt: v['outAt'] is DateTime ? v['outAt'] as DateTime : null,
-      ));
-    });
-
-    details.sort((x, y) => y.date.compareTo(x.date));
-
-    if (!mounted) return;
-    await showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      builder: (_) => DraggableScrollableSheet(
-        expand: false,
-        builder: (context, ctrl) => Scaffold(
-          appBar:
-              AppBar(title: Text(a.userName.isEmpty ? a.uid : a.userName)),
-          body: ListView.builder(
-            controller: ctrl,
-            itemCount: details.length,
-            itemBuilder: (_, i) => _detailTile(details[i]),
-          ),
-        ),
-      ),
-    );
-
-    await _loadAbsencesData();
-  }
-
-  // ======== وقت مخصص: Pickers + دمج التاريخ بالوقت ========
-  Future<TimeOfDay?> _pickTime(BuildContext context, {required String title}) async {
-    return showTimePicker(
-      context: context,
-      helpText: title,
-      initialTime: const TimeOfDay(hour: 9, minute: 0),
-    );
-    // ملاحظة: ممكن تستخدم intl لو عايز تنسيق 12/24 أو Locale
-  }
-
-  DateTime _combineDateTime(DateTime date, TimeOfDay tod) {
-    return DateTime(date.year, date.month, date.day, tod.hour, tod.minute);
-  }
-
-  // إضافة IN/OUT — تقبل وقت مخصّص (إن وُجد) + حذف absent
-  Future<void> _addPunch(
-    _AbsDetailRow r, {
-    bool addIn = false,
-    bool addOut = false,
-    DateTime? inAtOverride,
-    DateTime? outAtOverride,
-  }) async {
-    final defaultIn  = DateTime(r.date.year, r.date.month, r.date.day, 9, 0);
-    final defaultOut = DateTime(r.date.year, r.date.month, r.date.day, 17, 0);
-
-    final inAt  = inAtOverride  ?? defaultIn;
-    final outAt = outAtOverride ?? defaultOut;
-
-    final col = FirebaseFirestore.instance.collection('attendance');
-    final batch = FirebaseFirestore.instance.batch();
-
-    if (addIn) {
-      batch.set(
-        col.doc('${r.uid}_${r.localDay}_in'),
-        {
-          'userId': r.uid,
-          'userName': r.userName,
-          'branchName': r.branchName,
-          'shiftName': r.shiftName,
-          'localDay': r.localDay,
-          'type': 'in',
-          'at': Timestamp.fromDate(inAt),
-          'createdAt': FieldValue.serverTimestamp(),
-        },
-        SetOptions(merge: true),
-      );
-    }
-    if (addOut) {
-      batch.set(
-        col.doc('${r.uid}_${r.localDay}_out'),
-        {
-          'userId': r.uid,
-          'userName': r.userName,
-          'branchName': r.branchName,
-          'shiftName': r.shiftName,
-          'localDay': r.localDay,
-          'type': 'out',
-          'at': Timestamp.fromDate(outAt),
-          'createdAt': FieldValue.serverTimestamp(),
-        },
-        SetOptions(merge: true),
-      );
-    }
-
-    await batch.commit();
-
-    // احذف مستند الغياب (لو موجود)
-    try {
-      await col.doc('${r.uid}_${r.localDay}_absent').delete();
-    } catch (_) {}
-  }
-
-  Future<void> _markPresentDay(_AbsDetailRow r) async {
-    await _addPunch(r, addIn: true, addOut: true);
-    await _deleteAbsentDoc(r, silent: true);
-  }
-
-  Future<void> _deleteAbsentDoc(_AbsDetailRow r, {bool silent = false}) async {
-    final id = '${r.uid}_${r.localDay}_absent';
-    final ref = FirebaseFirestore.instance.collection('attendance').doc(id);
-    final snap = await ref.get();
-    if (snap.exists) await ref.delete();
-    if (!silent && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Absence deleted')));
-    }
-  }
-
-  // Backfill
-  Future<void> _backfillAllAbsencesForRange() async {
-    if (_range == null) return;
-    setState(() => _absLoading = true);
-
-    try {
-      final users = await _getApprovedUsersFiltered();
-      for (final u in users) {
-        final uid = u.id;
-        await _backfillAbsents(
-          uid: uid,
-          from: DateTime(_range!.start.year, _range!.start.month, _range!.start.day),
-          to: DateTime(_range!.end.year, _range!.end.month, _range!.end.day),
-          weekendDays: _weekendDays,
-          holidays: _holidays,
-        );
-      }
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Backfill completed')),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Backfill failed: $e')),
-        );
-      }
-    } finally {
-      await _loadAbsencesData();
-    }
-  }
-
-  Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>>
-      _getApprovedUsersFiltered() async {
-    var q = FirebaseFirestore.instance
-        .collection('users')
-        .where('status', isEqualTo: 'approved');
-    final qs = await q.get();
-    final list = qs.docs.where((d) {
-      final m = d.data();
-      final br = (m['primaryBranchId'] ?? m['branchId'] ?? '').toString();
-      final sh = (m['assignedShiftId'] ?? m['shiftId'] ?? '').toString();
-      if (_absBranchFilterId != 'all' && br != _absBranchFilterId) return false;
-      if (_absShiftFilterId != 'all' && sh != _absShiftFilterId) return false;
-      return true;
-    }).toList();
-    return list;
-  }
-
-  Future<void> _backfillAbsents({
-    required String uid,
-    required DateTime from,
-    required DateTime to,
-    required Set<int> weekendDays,
-    required Set<String> holidays,
-  }) async {
-    final col = FirebaseFirestore.instance.collection('attendance');
-
-    for (var d = DateTime(from.year, from.month, from.day);
-        !d.isAfter(to);
-        d = d.add(const Duration(days: 1))) {
-      final dayKey = _dayKey(d);
-
-      final isWeekend = weekendDays.contains(d.weekday);
-      final isHoliday = holidays.contains(dayKey);
-      if (isWeekend || isHoliday) continue;
-
-      final qs = await col
-          .where('userId', isEqualTo: uid)
-          .where('localDay', isEqualTo: dayKey)
-          .get();
-
-      final hasInOrOut = qs.docs.any((x) {
-        final t = (x['type'] ?? '').toString();
-        return t == 'in' || t == 'out';
-      });
-      final hasAbsent = qs.docs.any((x) => (x['type'] ?? '') == 'absent');
-
-      if (!hasInOrOut && !hasAbsent) {
-        await col.doc('${uid}_${dayKey}_absent').set({
-          'userId': uid,
-          'localDay': dayKey,
-          'type': 'absent',
-          'createdAt': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
-      }
-    }
-  }
-
   // ================== BUILD ==================
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Users & Absences'),
+        title: const Text('Users'),
         bottom: TabBar(
           controller: _tab,
           tabs: const [
             Tab(text: 'Pending'),
             Tab(text: 'Approved'),
-            Tab(text: 'Absences'),
           ],
           onTap: (_) => setState(() {}),
         ),
         actions: [
-          if (_tab.index != 2)
-            IconButton(
-              tooltip: 'Export CSV',
-              onPressed: _exportUsersCsvPressed,
-              icon: const Icon(Icons.download),
-            ),
+          IconButton(
+            tooltip: 'Export CSV',
+            onPressed: _exportUsersCsvPressed,
+            icon: const Icon(Icons.download),
+          ),
           const SizedBox(width: 8),
         ],
       ),
       body: Column(
         children: [
-          if (_tab.index != 2) _filtersBarUsers(),
-          if (_tab.index != 2) const Divider(height: 1),
+          _filtersBarUsers(),
+          const Divider(height: 1),
           Expanded(
             child: TabBarView(
               controller: _tab,
               children: [
-                _usersTab(),
-                _usersTab(),
-                _absencesTab(),
+                _usersTab(), // Pending
+                _usersTab(), // Approved
               ],
             ),
           ),
@@ -841,6 +399,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
           return const Center(child: Text('No users found.'));
         }
 
+        // نجمع حسب الفرع لعرض أنظف
         final byBranch =
             <String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>{};
         for (final d in docs) {
@@ -854,7 +413,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
             final title =
                 entry.key.isEmpty ? 'No branch' : _branchLabelFor(entry.key);
             final list = entry.value;
-            final shownCount = list.length;
+            final shownCount = list.length; // بعد الفلاتر بالفعل
             return ExpansionTile(
               title: Text('$title — $shownCount user(s)'),
               children: list
@@ -948,297 +507,6 @@ class _AdminUsersScreenState extends State<AdminUsersScreen>
         ),
       ),
     );
-  }
-
-  // ======== ABSENCES TAB (Cards + Detail) ========
-  Widget _absencesTab() {
-    final isWide = MediaQuery.of(context).size.width > 900;
-    return Column(
-      children: [
-        _filtersBarAbsences(),
-        const Divider(height: 1),
-        Expanded(
-          child: _absLoading
-              ? const Center(child: CircularProgressIndicator())
-              : _absCards.isEmpty
-                  ? const Center(child: Text('No exceptions for selected filters.'))
-                  : Padding(
-                      padding: const EdgeInsets.all(8),
-                      child: isWide
-                          ? GridView.count(
-                              crossAxisCount: 3,
-                              mainAxisSpacing: 8,
-                              crossAxisSpacing: 8,
-                              childAspectRatio: 3.4,
-                              children: _absCards.map(_userAggCard).toList(),
-                            )
-                          : ListView.separated(
-                              itemCount: _absCards.length,
-                              separatorBuilder: (_, __) => const SizedBox(height: 8),
-                              itemBuilder: (_, i) => _userAggCard(_absCards[i]),
-                            ),
-                    ),
-        ),
-      ],
-    );
-  }
-
-  Widget _filtersBarAbsences() {
-    return Card(
-      margin: const EdgeInsets.fromLTRB(8, 10, 8, 6),
-      elevation: .5,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-        child: Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          crossAxisAlignment: WrapCrossAlignment.center,
-          children: [
-            FilledButton.tonalIcon(
-              onPressed: () async {
-                final picked = await showDateRangePicker(
-                  context: context,
-                  firstDate: DateTime(2022),
-                  lastDate: DateTime(2100),
-                  initialDateRange: _range,
-                );
-                if (picked != null) setState(() => _range = picked);
-              },
-              icon: const Icon(Icons.date_range),
-              label: Text(_range == null
-                  ? 'Pick date range'
-                  : '${_fmtD(_range!.start)} → ${_fmtD(_range!.end)}'),
-            ),
-            DropdownButtonHideUnderline(
-              child: DropdownButton<String>(
-                value: _absBranchFilterId,
-                items: [
-                  const DropdownMenuItem(value: 'all', child: Text('All branches')),
-                  ..._branches.map((b) => DropdownMenuItem(
-                        value: b.id,
-                        child: Text((b.data()['name'] ?? '').toString()),
-                      )),
-                ],
-                onChanged: (v) => setState(() => _absBranchFilterId = v ?? 'all'),
-              ),
-            ),
-            DropdownButtonHideUnderline(
-              child: DropdownButton<String>(
-                value: _absShiftFilterId,
-                items: [
-                  const DropdownMenuItem(value: 'all', child: Text('All shifts')),
-                  ..._shifts.map((s) => DropdownMenuItem(
-                        value: s.id,
-                        child: Text((s.data()['name'] ?? '').toString()),
-                      )),
-                ],
-                onChanged: (v) => setState(() => _absShiftFilterId = v ?? 'all'),
-              ),
-            ),
-            SizedBox(
-              width: 240,
-              child: TextField(
-                controller: _absSearchCtrl,
-                onChanged: (_) => setState(() {}),
-                decoration: const InputDecoration(
-                  prefixIcon: Icon(Icons.search),
-                  hintText: 'Search (name / code / branch / shift)',
-                  isDense: true,
-                  border: OutlineInputBorder(),
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            FilledButton.icon(
-              onPressed: _absLoading ? null : _loadAbsencesData,
-              icon: const Icon(Icons.search),
-              label: const Text('Apply'),
-            ),
-            const SizedBox(width: 12),
-            FilledButton.icon(
-              onPressed: _absLoading
-                  ? null
-                  : () async {
-                      final ok = await showDialog<bool>(
-                        context: context,
-                        builder: (_) => AlertDialog(
-                          title: const Text('Backfill absences'),
-                          content: const Text(
-                              'سيتم إنشاء سجلات غياب لأي يوم عمل بلا IN/OUT في الفترة المختارة. هل تريد المتابعة؟'),
-                          actions: [
-                            TextButton(
-                                onPressed: () => Navigator.pop(context, false),
-                                child: const Text('Cancel')),
-                            FilledButton(
-                                onPressed: () => Navigator.pop(context, true),
-                                child: const Text('Proceed')),
-                          ],
-                        ),
-                      );
-                      if (ok == true) {
-                        await _backfillAllAbsencesForRange();
-                      }
-                    },
-              icon: const Icon(Icons.build),
-              label: const Text('Backfill absences'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _userAggCard(_AbsAgg a) {
-    final total = a.absent + a.missingIn + a.missingOut;
-    return Card(
-      child: ListTile(
-        title: Text(a.userName.isEmpty ? a.uid : a.userName),
-        subtitle: Wrap(
-          spacing: 8,
-          runSpacing: 6,
-          children: [
-            Chip(label: Text('Code: ${a.uid}')),
-            if (a.branchName.isNotEmpty) Chip(label: Text('Branch: ${a.branchName}')),
-            if (a.shiftName.isNotEmpty) Chip(label: Text('Shift: ${a.shiftName}')),
-            Chip(
-              label: Text('Absent: ${a.absent}'),
-              backgroundColor: Colors.red,
-              labelStyle: const TextStyle(color: Colors.white),
-            ),
-            Chip(
-              label: Text('Missing IN: ${a.missingIn}'),
-              backgroundColor: Colors.orange,
-              labelStyle: const TextStyle(color: Colors.white),
-            ),
-            Chip(
-              label: Text('Missing OUT: ${a.missingOut}'),
-              backgroundColor: Colors.orange,
-              labelStyle: const TextStyle(color: Colors.white),
-            ),
-            Chip(label: Text('Total: $total')),
-          ],
-        ),
-        trailing: const Icon(Icons.chevron_right),
-        onTap: () => _openUserExceptions(a),
-      ),
-    );
-  }
-
-  Widget _detailTile(_AbsDetailRow r) {
-    // لون الحالة العامة
-    Color statusColor;
-    String statusText = r.status;
-    switch (r.status) {
-      case 'absent':
-        statusColor = Colors.red;
-        break;
-      case 'incomplete_in':
-      case 'incomplete_out':
-        statusColor = Colors.orange;
-        break;
-      default:
-        statusColor = Colors.green;
-        statusText = 'Present';
-    }
-
-    final inChip = r.hasIn && r.inAt != null
-        ? Chip(label: Text('IN ${_fmtTime(r.inAt!)}'))
-        : const Chip(
-            label: Text('Missing IN'),
-            backgroundColor: Colors.orange,
-            labelStyle: TextStyle(color: Colors.white),
-          );
-
-    final outChip = r.hasOut && r.outAt != null
-        ? Chip(label: Text('OUT ${_fmtTime(r.outAt!)}'))
-        : const Chip(
-            label: Text('Missing OUT'),
-            backgroundColor: Colors.orange,
-            labelStyle: TextStyle(color: Colors.white),
-          );
-
-    return ListTile(
-      title: Text(_fmtD(r.date)),
-      subtitle: Wrap(
-        spacing: 8,
-        runSpacing: 6,
-        children: [
-          Chip(
-            label: Text(statusText),
-            backgroundColor: statusColor,
-            labelStyle: const TextStyle(color: Colors.white),
-          ),
-          inChip,
-          outChip,
-          Chip(label: Text('Branch: ${r.branchName}')),
-          Chip(label: Text('Shift: ${r.shiftName}')),
-        ],
-      ),
-      trailing: PopupMenuButton<String>(
-        onSelected: (v) async {
-          switch (v) {
-            case 'fix_in': {
-              final tod = await _pickTime(context, title: 'اختر وقت الدخول (IN)');
-              if (tod != null) {
-                final when = _combineDateTime(r.date, tod);
-                await _addPunch(r, addIn: true, inAtOverride: when);
-                // تحديث محلي فوري
-                r.hasIn = true;
-                r.inAt = when;
-                r.isAbsent = false;
-                setState(() {});
-              }
-              break;
-            }
-            case 'fix_out': {
-              final tod = await _pickTime(context, title: 'اختر وقت الخروج (OUT)');
-              if (tod != null) {
-                final when = _combineDateTime(r.date, tod);
-                await _addPunch(r, addOut: true, outAtOverride: when);
-                r.hasOut = true;
-                r.outAt = when;
-                r.isAbsent = false;
-                setState(() {});
-              }
-              break;
-            }
-            case 'mark_present':
-              await _markPresentDay(r);
-              // تحديث محلي
-              r.hasIn = true;
-              r.hasOut = true;
-              r.inAt ??= DateTime(r.date.year, r.date.month, r.date.day, 9, 0);
-              r.outAt ??= DateTime(r.date.year, r.date.month, r.date.day, 17, 0);
-              r.isAbsent = false;
-              setState(() {});
-              break;
-            case 'delete_absent':
-              await _deleteAbsentDoc(r);
-              r.isAbsent = false;
-              setState(() {});
-              break;
-          }
-        },
-        itemBuilder: (context) => [
-          if (!r.hasIn)
-            const PopupMenuItem(value: 'fix_in', child: Text('Fix IN (اختر الوقت)')),
-          if (!r.hasOut)
-            const PopupMenuItem(value: 'fix_out', child: Text('Fix OUT (اختر الوقت)')),
-          const PopupMenuItem(value: 'mark_present', child: Text('Mark Present (create IN/OUT)')),
-          if (r.isAbsent)
-            const PopupMenuItem(value: 'delete_absent', child: Text('Delete absence')),
-        ],
-      ),
-    );
-  }
-
-  String _fmtD(DateTime d) =>
-      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
-
-  String _fmtTime(DateTime t) {
-    final hh = t.hour.toString().padLeft(2, '0');
-    final mm = t.minute.toString().padLeft(2, '0');
-    return '$hh:$mm';
   }
 }
 
@@ -1377,65 +645,6 @@ class _UserCard extends StatelessWidget {
         ),
       ),
     );
-  }
-}
-
-// ====== Absences (models) ======
-class _AbsAgg {
-  final String uid;
-  final String userName;
-  final String branchId;
-  final String branchName;
-  final String shiftId;
-  final String shiftName;
-  int absent = 0;
-  int missingIn = 0;  // عنده OUT بس مفيش IN
-  int missingOut = 0; // عنده IN بس مفيش OUT
-
-  _AbsAgg({
-    required this.uid,
-    required this.userName,
-    required this.branchId,
-    required this.branchName,
-    required this.shiftId,
-    required this.shiftName,
-  });
-}
-
-class _AbsDetailRow {
-  final String uid;
-  final String userName;
-  final String branchName;
-  final String shiftName;
-  DateTime date;
-  String localDay;
-  bool hasIn;
-  bool hasOut;
-  bool isAbsent;
-  DateTime? inAt;
-  DateTime? outAt;
-
-  _AbsDetailRow({
-    required this.uid,
-    required this.userName,
-    required this.branchName,
-    required this.shiftName,
-    required this.date,
-    required this.localDay,
-    required this.hasIn,
-    required this.hasOut,
-    required this.isAbsent,
-    required this.inAt,
-    required this.outAt,
-  });
-
-  // أولوية الحالة: present > incomplete > absent
-  String get status {
-    if (hasIn && hasOut) return 'present';
-    if (hasIn && !hasOut) return 'incomplete_out';
-    if (!hasIn && hasOut) return 'incomplete_in';
-    if (isAbsent) return 'absent';
-    return 'absent';
   }
 }
 
