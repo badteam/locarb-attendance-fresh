@@ -21,13 +21,13 @@ class AttendanceReportScreen extends StatefulWidget {
     this.allowEditing = true,
   });
 
-  final String? userId;           // تقرير موظف معيّن (اختياري)
-  final String? userName;         // للعنوان (اختياري)
+  final String? userId;           // تقارير موظف بعينه (اختياري)
+  final String? userName;         // يظهر في العنوان (اختياري)
   final DateTimeRange? initialRange;
-  final String? branchId;         // فلتر مبدئي (اختياري)
-  final String? shiftId;          // فلتر مبدئي (اختياري)
+  final String? branchId;         // فلتر مبدئي
+  final String? shiftId;          // فلتر مبدئي
   final bool onlyExceptions;      // اعرض الاستثناءات فقط
-  final bool allowEditing;        // تمكين تعديل IN/OUT
+  final bool allowEditing;        // السماح بالتعديل
 
   @override
   State<AttendanceReportScreen> createState() => _AttendanceReportScreenState();
@@ -40,7 +40,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   String? _shiftId;
   late bool _onlyEx;
 
-  // كاش بيانات وأسماء
+  // كاش للأسماء/المرجع
   final Map<String, Map<String, dynamic>> _usersCache = {};
   final Map<String, String> _userNames = {};
   final Map<String, String> _branchNames = {};
@@ -99,11 +99,11 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     );
   }
 
-  // حفظ/تعديل Punch واحد + إزالة أي غياب لنفس اليوم
+  // حفظ/تعديل Punch + إزالة أي غياب لنفس اليوم
   Future<void> _setPunch({
     required String uid,
-    required String localDay,     // YYYY-MM-DD
-    required String type,         // "in" | "out"
+    required String localDay,   // YYYY-MM-DD
+    required String type,       // "in" | "out"
     required DateTime at,
     required String userName,
     required String branchId,
@@ -112,41 +112,22 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     required String shiftName,
   }) async {
     final col = FirebaseFirestore.instance.collection('attendance');
+    final docId = '${uid}_${localDay}_$type';
 
-    // عدّل لو موجود، وإلا أنشئ
-    final q = await col
-        .where('userId', isEqualTo: uid)
-        .where('localDay', isEqualTo: localDay)
-        .where('type', isEqualTo: type)
-        .limit(1)
-        .get();
+    await col.doc(docId).set({
+      'userId': uid,
+      'userName': userName,
+      'localDay': localDay,
+      'type': type,
+      'at': Timestamp.fromDate(at),
+      'branchId': branchId,
+      'branchName': branchName,
+      'shiftId': shiftId,
+      'shiftName': shiftName,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
 
-    if (q.docs.isNotEmpty) {
-      await q.docs.first.reference.update({
-        'at': Timestamp.fromDate(at),
-        'branchId': branchId,
-        'branchName': branchName,
-        'shiftId': shiftId,
-        'shiftName': shiftName,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-    } else {
-      final id = '${uid}_${localDay}_$type';
-      await col.doc(id).set({
-        'userId': uid,
-        'userName': userName,
-        'localDay': localDay,
-        'type': type,
-        'at': Timestamp.fromDate(at),
-        'branchId': branchId,
-        'branchName': branchName,
-        'shiftId': shiftId,
-        'shiftName': shiftName,
-        'createdAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-    }
-
-    // امسح أي absent لهذا اليوم (ID عشوائي أو ثابت)
+    // امسح أي absent لنفس اليوم (لو كان موجود بآي دي عشوائي)
     final abs = await col
         .where('userId', isEqualTo: uid)
         .where('localDay', isEqualTo: localDay)
@@ -157,7 +138,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     }
   }
 
-  // تصدير إكسل (نفس منطقك القديم)
+  // تصدير اكسل
   Future<void> _exportExcel() async {
     try {
       Query<Map<String, dynamic>> q = FirebaseFirestore.instance
@@ -180,9 +161,8 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
       }
       if (docs.isEmpty) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No records to export for this range')),
-        );
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('No records to export for this range')));
         return;
       }
 
@@ -343,7 +323,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                     if (typ == 'absent') map[key]!.isAbsent = true;
                   }
 
-                  // لو فيه IN/OUT لأي يوم، اعتبره ليس غياب
+                  // لو فيه IN/OUT ليوم ما، اعتبره ليس غياب
                   for (final r in map.values) {
                     if (r.hasIn || r.hasOut) r.isAbsent = false;
                   }
@@ -548,7 +528,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   }
 }
 
-// ====== موديل اليوم الواحد ======
+// ====== موديل يوم واحد ======
 class _DaySummary {
   final String uid;
   final String userName;
@@ -576,15 +556,8 @@ class _DaySummary {
     required this.shiftName,
   });
 
-  void setIn(DateTime? t) {
-    hasIn = true;
-    inAt = t ?? inAt;
-  }
-
-  void setOut(DateTime? t) {
-    hasOut = true;
-    outAt = t ?? outAt;
-  }
+  void setIn(DateTime? t) { hasIn = true; if (t != null) inAt = t; }
+  void setOut(DateTime? t){ hasOut = true; if (t != null) outAt = t; }
 
   bool get isException => !(hasIn && hasOut) || isAbsent;
 }
@@ -645,7 +618,7 @@ class _ErrorBox extends StatelessWidget {
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Text(
-            'Query error:\n$error\n\nIf it mentions an index, select "All branches" or create the needed index in Firestore.',
+            'Query error:\n$error\n\nIf an index is required, pick "All branches" or create the index in Firestore.',
           ),
         ),
       ),
