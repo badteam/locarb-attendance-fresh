@@ -93,44 +93,42 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
       showTimePicker(context: context, helpText: title, initialTime: const TimeOfDay(hour: 9, minute: 0));
 
   // ========= أهم جزء: الحفظ + حذف أي absent =========
-  Future<void> _setPunch({
-    required String uid,
-    required String localDay,   // YYYY-MM-DD
-    required String type,       // "in" | "out"
-    required DateTime at,
-    required String userName,
-    required String branchId,
-    required String branchName,
-    required String shiftId,
-    required String shiftName,
-  }) async {
-    final col = FirebaseFirestore.instance.collection('attendance');
-    final docId = '${uid}_${localDay}_$type';
+ Future<void> _setPunch({
+  required String uid,
+  required String localDay,   // YYYY-MM-DD
+  required String type,       // "in" | "out"
+  required DateTime at,
+  required String userName,
+  required String branchId,
+  required String branchName,
+  required String shiftId,
+  required String shiftName,
+}) async {
+  final col = FirebaseFirestore.instance.collection('attendance');
 
-    // 1) سجل IN/OUT بنفس الـ schema
-    await col.doc(docId).set({
-      'userId': uid,
-      'userName': userName,
-      'localDay': localDay,
-      'type': type,
-      'at': Timestamp.fromDate(at),
-      'branchId': branchId,
-      'branchName': branchName,
-      'shiftId': shiftId,
-      'shiftName': shiftName,
-      'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+  // 1) احفظ IN/OUT
+  final punchId = '${uid}_${localDay}_$type';
+  await col.doc(punchId).set({
+    'userId': uid,
+    'userName': userName,
+    'localDay': localDay,
+    'type': type,
+    'at': Timestamp.fromDate(at),
+    'branchId': branchId,
+    'branchName': branchName,
+    'shiftId': shiftId,
+    'shiftName': shiftName,
+    'updatedAt': FieldValue.serverTimestamp(),
+  }, SetOptions(merge: true));
 
-    // 2) امسح أي مستند غياب لنفس اليوم/الموظف
-    final abs = await col
-        .where('userId', isEqualTo: uid)
-        .where('localDay', isEqualTo: localDay)
-        .where('type', isEqualTo: 'absent')
-        .get();
-    for (final d in abs.docs) {
-      await d.reference.delete();
-    }
+  // 2) امسح absent مباشرةً بالـ docId (بدون query = بدون index)
+  final absentId = '${uid}_${localDay}_absent';
+  try {
+    await col.doc(absentId).delete();
+  } catch (_) {
+    // Not found أو ممنوع — نتجاهل
   }
+}
 
   // (اختياري) تصدير اكسل
   Future<void> _exportExcel() async {
