@@ -1,12 +1,13 @@
 // lib/screens/attendance_report_screen.dart
-// نسخة ثابتة بعد مراجعة الداتا (EMP-001, localDay, type, branchId/Name, shiftId/Name)
-// إصلاحات أساسية:
-// 1) استخدام UID الأصلي كمفتاح لخريطة الأسماء (بدون .toLowerCase() على المفتاح)
-// 2) فلتر Branch/Shift اختياري ولا يخفي السجلات اللي ناقصها القيم إلا لو اتحدد فلتر
-// 3) عرض خطأ واضح لو الاستعلام محتاج Index بدل الشاشة البيضا
+// تعمل بدون Composite Index باستخدام orderBy + startAt/endAt
+// إصلاحات:
+// - استخدام UID الأصلي كمفتاح للأسماء (بدون lowercasing للمفتاح)
+// - فلتر Branch/Shift اختياري وما يخفّيش سجلات ناقصة
+// - بحث مرن على uid / name (من الكاش أو من الدوكيومنت)
+// - معالجة آمنة للحالات والحقول الناقصة
 
 import 'dart:typed_data';
-import 'dart:html' as html; // احذفه لو بتبني للموبايل فقط
+import 'dart:html' as html; // احذفه لو بتبني موبايل فقط
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -23,7 +24,7 @@ class AttendanceReportScreen extends StatefulWidget {
     this.initialRange,
     this.branchId,
     this.shiftId,
-    this.onlyExceptions = false,
+    this.onlyExceptions = false, // الافتراضي: عرض الكل
     this.allowEditing = true,
   });
 
@@ -50,7 +51,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
 
   // caches
   final Map<String, Map<String, dynamic>> _usersCache = {};
-  final Map<String, String> _userNames = {};   // مفتاحها = UID الأصلي (مثال: EMP-001)
+  final Map<String, String> _userNames = {};   // المفتاح = UID الأصلي (مثال: EMP-001)
   final Map<String, String> _branchNames = {};
   final Map<String, String> _shiftNames  = {};
 
@@ -167,7 +168,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     }
   }
 
-  // ======== تعليم اليوم Off/Sick/Leave + تجاهل الحسابات ========
+  // ======== تعليم اليوم Off/Sick/Leave ========
   Future<void> _setDayStatus({
     required String uid,
     required String localDay,
@@ -194,7 +195,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
       'shiftName': shiftName,
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
-    batch.delete(col.doc(absentId)); // نظافة
+    batch.delete(col.doc(absentId));
 
     try {
       await batch.commit();
@@ -242,11 +243,12 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   // ======== Export Excel ========
   Future<void> _exportExcel() async {
     try {
-      Query<Map<String, dynamic>> q = FirebaseFirestore.instance
+      // بدون index: استخدم orderBy + startAt/endAt
+      final q = FirebaseFirestore.instance
           .collection('attendance')
-          .where('localDay', isGreaterThanOrEqualTo: _fmtDay(_from))
-          .where('localDay', isLessThanOrEqualTo: _fmtDay(_to))
-          .orderBy('localDay', descending: false);
+          .orderBy('localDay', descending: false)
+          .startAt([_fmtDay(_from)])
+          .endAt([_fmtDay(_to)]);
 
       final snap = await q.get();
       var docs = snap.docs;
@@ -266,7 +268,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
         return;
       }
 
-      // اضمن إن كل UID له اسم
+      // أسماء المستخدمين
       final uidSet = <String>{};
       for (final d in docs) {
         final uid = (d.data()['userId'] ?? '').toString();
@@ -309,12 +311,12 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     final branchesRef = FirebaseFirestore.instance.collection('branches').orderBy('name');
     final shiftsRef   = FirebaseFirestore.instance.collection('shifts').orderBy('name');
 
-    // ملاحظة: الشرطين + orderBy يتطلبوا Composite Index في Firestore
+    // ===== الاستعلام الرئيسي بدون Index مركب =====
     final q = FirebaseFirestore.instance
         .collection('attendance')
-        .where('localDay', isGreaterThanOrEqualTo: _fmtDay(_from))
-        .where('localDay', isLessThanOrEqualTo: _fmtDay(_to))
-        .orderBy('localDay', descending: true);
+        .orderBy('localDay', descending: true)
+        .startAt([_fmtDay(_from)])   // >=
+        .endAt([_fmtDay(_to)]);      // <=
 
     return Scaffold(
       appBar: AppBar(
@@ -339,7 +341,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
             final m = u.data();
             final full = (m['fullName'] ?? m['name'] ?? '').toString();
             final uname = (m['username'] ?? '').toString();
-            // نخزن على المفتاح الأصلي لِـ uid (بدون Lowercase)
             _userNames[u.id] = full.isNotEmpty ? full : (uname.isNotEmpty ? uname : u.id);
             _usersCache[u.id] = m;
           }
@@ -381,18 +382,16 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                     if (widget.userId?.isNotEmpty == true && (m['userId'] ?? '') != widget.userId) {
                       return false;
                     }
-
                     // branch (لا نفلتر إلا لو اتحدد قيمة)
                     if (_branchId?.isNotEmpty == true) {
                       if ((m['branchId'] ?? '') != _branchId) return false;
                     }
-
                     // shift (لا نفلتر إلا لو اتحدد قيمة)
                     if (_shiftId?.isNotEmpty == true) {
                       if ((m['shiftId'] ?? '') != _shiftId) return false;
                     }
 
-                    // البحث: مقارنة Case-Insensitive لكن باستخدام المفتاح الأصلي للـ _userNames
+                    // البحث: uid / cachedName / userName داخل الدوكيومنت
                     final qtxt = _searchCtrl.text.trim().toLowerCase();
                     if (qtxt.isNotEmpty) {
                       final uid = (m['userId'] ?? '').toString(); // مفتاح أصلي
@@ -916,7 +915,7 @@ class _ErrorBox extends StatelessWidget {
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Text(
-            'Query error:\n$error\n\nملاحظة: هذا الاستعلام يستخدم where + orderBy على localDay ويستلزم إنشاء Composite Index في Firestore.\nافتح Firestore → Indexes → Composite → Add index على الحقل localDay (Asc/Desc) مع شروط where المذكورة.',
+            'Query error:\n$error',
           ),
         ),
       ),
