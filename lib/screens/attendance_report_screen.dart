@@ -197,7 +197,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     }
   }
 
-  // ======== Reset Auto: امسح حالات اليوم (off/sick/leave/absent) واترك IN/OUT ========
+  // ======== Reset Auto: امسح حالات اليوم واترك IN/OUT ========
   Future<void> _resetDayAuto(String uid, String localDay) async {
     final col = FirebaseFirestore.instance.collection('attendance');
     final ids = [
@@ -227,23 +227,17 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     }
   }
 
-  // ======== Export Excel (نفس الاستعلام الذكي) ========
+  // ======== Export Excel (بنفس الاستعلام الأصلي) ========
   Future<void> _exportExcel() async {
     try {
-      final col = FirebaseFirestore.instance.collection('attendance');
       DateTime from = _from, to = _to;
       if (from.isAfter(to)) { final t = from; from = to; to = t; }
-      final fromStr = _fmtDay(from);
-      final toStr   = _fmtDay(to);
 
-      Query<Map<String, dynamic>> q;
-      if (fromStr == toStr) {
-        q = col.where('localDay', isEqualTo: fromStr);
-      } else {
-        q = col.orderBy('localDay', descending: false)
-               .startAt([fromStr])
-               .endAt([toStr]);
-      }
+      Query<Map<String, dynamic>> q = FirebaseFirestore.instance
+          .collection('attendance')
+          .where('localDay', isGreaterThanOrEqualTo: _fmtDay(from))
+          .where('localDay', isLessThanOrEqualTo: _fmtDay(to))
+          .orderBy('localDay', descending: false);
 
       final snap = await q.get();
       var docs = snap.docs;
@@ -278,7 +272,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
         from: from,
         to: to,
         userNames: names,
-        // لو محتاجين نحسب OT جوه الملف، نوسّع Export لاحقًا.
       );
       final filename = 'attendance_${_fmtDay(from)}_${_fmtDay(to)}.xlsx';
 
@@ -300,22 +293,16 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     }
   }
 
-  // ======== الاستعلام الذكي حسب النطاق (بدون Index مركّب) ========
+  // ======== الاستعلام الأصلي مع orderBy + where مزدوج ========
   Query<Map<String, dynamic>> _buildAttendanceQuery() {
-    final col = FirebaseFirestore.instance.collection('attendance');
-
     DateTime from = _from, to = _to;
     if (from.isAfter(to)) { final t = from; from = to; to = t; }
 
-    final fromStr = _fmtDay(from);
-    final toStr   = _fmtDay(to);
-
-    if (fromStr == toStr) {
-      return col.where('localDay', isEqualTo: fromStr);
-    }
-    return col.orderBy('localDay', descending: false)
-              .startAt([fromStr])
-              .endAt([toStr]);
+    return FirebaseFirestore.instance
+        .collection('attendance')
+        .where('localDay', isGreaterThanOrEqualTo: _fmtDay(from))
+        .where('localDay', isLessThanOrEqualTo: _fmtDay(to))
+        .orderBy('localDay', descending: true);
   }
 
   @override
@@ -460,12 +447,11 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                     }
                   }
 
-                  // حساب العمل/الأوفر تايم + missing in/out
+                  // حساب العمل/OT + Missing IN/OUT
                   for (final entry in byUserDay.entries) {
                     final key = entry.key;
                     final r = entry.value;
 
-                    // لو Off/Sick/Leave → تجاهل حسابات العمل
                     if (r.isOff || r.isSick || r.isLeave) {
                       r.hasIn = r.hasOut = false;
                       r.workedMinutes = 0;
@@ -478,7 +464,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                     r.hasIn = ins.isNotEmpty;
                     r.hasOut = outs.isNotEmpty;
 
-                    // قرن الأزواج: أقرب OUT لكل IN
                     int i = 0, j = 0, worked = 0;
                     while (i < ins.length && j < outs.length) {
                       final inT = ins[i];
@@ -497,7 +482,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                     if (r.hasIn && !r.hasOut) r.missingOut = true;
                     if (!r.hasIn && r.hasOut) r.missingIn  = true;
 
-                    // لو فيه أي IN/OUT نشيل absent
                     if (r.hasIn || r.hasOut) r.isAbsent = false;
 
                     r.inAt  = ins.isNotEmpty  ? ins.first  : null;
@@ -506,12 +490,14 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
 
                   // Only exceptions
                   var rows = byUserDay.values.toList();
-                  if (_onlyEx) {
-                    rows = rows.where((r) => r.isAbsent || r.missingIn || r.missingOut).toList();
-                  }
+                  if (_onlyEx) rows = rows.where((r) => r.isAbsent || r.missingIn || r.missingOut).toList();
 
                   if (rows.isEmpty) {
-                    return const Center(child: Text('No records in the selected range'));
+                    final hasAnyDocs = docs.isNotEmpty;
+                    final msg = _onlyEx && hasAnyDocs
+                        ? 'No exceptions in this range'
+                        : 'No records in the selected range';
+                    return Center(child: Text(msg));
                   }
 
                   rows.sort((a, b) => b.date.compareTo(a.date));
@@ -628,7 +614,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   }
 
   Widget _rowTile(_DaySummary r) {
-    // تحديد الحالة الأساسية + اختلافات الحالة الخاصة
     String status;
     Color color;
 
@@ -762,7 +747,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   }
 }
 
-// ====== موديل اليوم الواحد (بالـ OT والحالات) ======
+// ====== موديل اليوم الواحد بالـ OT ======
 class _DaySummary {
   final String uid;
   final String userName;
@@ -868,9 +853,7 @@ class _ErrorBox extends StatelessWidget {
         color: Theme.of(context).colorScheme.errorContainer,
         child: Padding(
           padding: const EdgeInsets.all(16),
-          child: Text(
-            'Query error:\n$error',
-          ),
+          child: Text('Query error:\n$error'),
         ),
       ),
     );
