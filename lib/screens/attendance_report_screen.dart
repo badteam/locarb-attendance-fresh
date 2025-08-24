@@ -106,9 +106,15 @@ Future<void> _setPunch({
 }) async {
   final col = FirebaseFirestore.instance.collection('attendance');
 
-  // docId للـ IN/OUT
-  final punchId = '${uid}_${localDay}_$type';
-  await col.doc(punchId).set({
+  final punchId  = '${uid}_${localDay}_$type';
+  final absentId = '${uid}_${localDay}_absent';
+
+  final batch = FirebaseFirestore.instance.batch();
+  final punchRef  = col.doc(punchId);
+  final absentRef = col.doc(absentId);
+
+  // اكتب IN/OUT
+  batch.set(punchRef, {
     'userId': uid,
     'userName': userName,
     'localDay': localDay,
@@ -122,23 +128,24 @@ Future<void> _setPunch({
     'updatedAt': FieldValue.serverTimestamp(),
   }, SetOptions(merge: true));
 
-  // docId للـ absent
-  final absentId = '${uid}_${localDay}_absent';
-  final absentRef = col.doc(absentId);
+  // احذف absent (لو موجود)
+  batch.delete(absentRef);
 
-  final snap = await absentRef.get();
-  if (snap.exists) {
-    await absentRef.delete();
-    debugPrint('Deleted absent record: $absentId');
-  } else {
-    debugPrint('No absent record found for $absentId');
-  }
-
-  if (mounted) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Attendance saved & absent cleared if existed')),
-    );
-    setState(() {});
+  try {
+    await batch.commit();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Saved. Absent cleared (if existed).')),
+      );
+      setState(() {}); // refresh
+    }
+  } catch (e) {
+    // هنا هنشوف الخطأ الحقيقي (مثلاً permission-denied)
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Save failed: $e')),
+      );
+    }
   }
 }
 
