@@ -6,8 +6,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
-// لو مش محتاج التصدير حالياً، تقدر تشيل import + كل ما يخص _exportExcel
-import '../utils/export.dart';
+import '../utils/export.dart';         // لو مش محتاج التصدير حالياً، احذف الاستيراد والدوال المرتبطة
 import '../widgets/main_drawer.dart';
 
 class AttendanceReportScreen extends StatefulWidget {
@@ -41,6 +40,9 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   String? _shiftId;
   late bool _onlyEx;
 
+  final _searchCtrl = TextEditingController();
+
+  // caches
   final Map<String, Map<String, dynamic>> _usersCache = {};
   final Map<String, String> _userNames = {};
   final Map<String, String> _branchNames = {};
@@ -53,7 +55,13 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     _to   = widget.initialRange?.end   ?? DateTime.now();
     _branchId = widget.branchId;
     _shiftId  = widget.shiftId;
-    _onlyEx   = widget.onlyExceptions;
+    _onlyEx   = widget.onlyExceptions; // ON افتراضياً
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
   }
 
   String _fmtDay(DateTime d) =>
@@ -66,6 +74,11 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     if (dt == null) return '—';
     final h = dt.hour.toString().padLeft(2, '0');
     final m = dt.minute.toString().padLeft(2, '0');
+    return '$h:$m';
+  }
+  String _fmtHM(int minutes) {
+    final h = (minutes ~/ 60).toString().padLeft(2, '0');
+    final m = (minutes % 60).toString().padLeft(2, '0');
     return '$h:$m';
   }
 
@@ -92,64 +105,137 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   Future<TimeOfDay?> _pickTime(String title) =>
       showTimePicker(context: context, helpText: title, initialTime: const TimeOfDay(hour: 9, minute: 0));
 
-  // ========= أهم جزء: الحفظ + حذف أي absent =========
-Future<void> _setPunch({
-  required String uid,
-  required String localDay,   // YYYY-MM-DD
-  required String type,       // "in" | "out"
-  required DateTime at,
-  required String userName,
-  required String branchId,
-  required String branchName,
-  required String shiftId,
-  required String shiftName,
-}) async {
-  final col = FirebaseFirestore.instance.collection('attendance');
+  // ======== كتابة IN/OUT + مسح absent ========
+  Future<void> _setPunch({
+    required String uid,
+    required String localDay,   // YYYY-MM-DD
+    required String type,       // "in" | "out"
+    required DateTime at,
+    required String userName,
+    required String branchId,
+    required String branchName,
+    required String shiftId,
+    required String shiftName,
+  }) async {
+    final col = FirebaseFirestore.instance.collection('attendance');
 
-  final punchId  = '${uid}_${localDay}_$type';
-  final absentId = '${uid}_${localDay}_absent';
+    final punchId  = '${uid}_${localDay}_$type';
+    final absentId = '${uid}_${localDay}_absent';
 
-  final batch = FirebaseFirestore.instance.batch();
-  final punchRef  = col.doc(punchId);
-  final absentRef = col.doc(absentId);
+    final batch = FirebaseFirestore.instance.batch();
+    final punchRef  = col.doc(punchId);
+    final absentRef = col.doc(absentId);
 
-  // اكتب IN/OUT
-  batch.set(punchRef, {
-    'userId': uid,
-    'userName': userName,
-    'localDay': localDay,
-    'type': type,
-    'at': Timestamp.fromDate(at),
-    'branchId': branchId,
-    'branchName': branchName,
-    'shiftId': shiftId,
-    'shiftName': shiftName,
-    'source': 'manual',
-    'updatedAt': FieldValue.serverTimestamp(),
-  }, SetOptions(merge: true));
+    batch.set(punchRef, {
+      'userId': uid,
+      'userName': userName,
+      'localDay': localDay,
+      'type': type,
+      'at': Timestamp.fromDate(at),
+      'branchId': branchId,
+      'branchName': branchName,
+      'shiftId': shiftId,
+      'shiftName': shiftName,
+      'source': 'manual',
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
 
-  // احذف absent (لو موجود)
-  batch.delete(absentRef);
+    batch.delete(absentRef); // لو موجود
 
-  try {
-    await batch.commit();
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Saved. Absent cleared (if existed).')),
-      );
-      setState(() {}); // refresh
-    }
-  } catch (e) {
-    // هنا هنشوف الخطأ الحقيقي (مثلاً permission-denied)
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Save failed: $e')),
-      );
+    try {
+      await batch.commit();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Saved. Absent cleared (if existed).')),
+        );
+        setState(() {});
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Save failed: $e')),
+        );
+      }
     }
   }
-}
 
-  // (اختياري) تصدير اكسل
+  // ======== تعليم اليوم Off/Sick/Leave + تجاهل الحسابات ========
+  Future<void> _setDayStatus({
+    required String uid,
+    required String localDay,
+    required String statusType, // "off" | "sick" | "leave"
+    required String userName,
+    required String branchId,
+    required String branchName,
+    required String shiftId,
+    required String shiftName,
+  }) async {
+    final col = FirebaseFirestore.instance.collection('attendance');
+    final statusId = '${uid}_${localDay}_$statusType';
+    final absentId = '${uid}_${localDay}_absent';
+
+    final batch = FirebaseFirestore.instance.batch();
+    batch.set(col.doc(statusId), {
+      'userId': uid,
+      'userName': userName,
+      'localDay': localDay,
+      'type': statusType,
+      'branchId': branchId,
+      'branchName': branchName,
+      'shiftId': shiftId,
+      'shiftName': shiftName,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+    batch.delete(col.doc(absentId)); // نظافة
+
+    try {
+      await batch.commit();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Marked as ${statusType.toUpperCase()}')),
+        );
+        setState(() {});
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to mark day: $e')),
+        );
+      }
+    }
+  }
+
+  // ======== Reset Auto: امسح حالات اليوم (off/sick/leave/absent) واترك IN/OUT ========
+  Future<void> _resetDayAuto(String uid, String localDay) async {
+    final col = FirebaseFirestore.instance.collection('attendance');
+    final ids = [
+      '${uid}_${localDay}_off',
+      '${uid}_${localDay}_sick',
+      '${uid}_${localDay}_leave',
+      '${uid}_${localDay}_absent',
+    ];
+    final batch = FirebaseFirestore.instance.batch();
+    for (final id in ids) {
+      batch.delete(col.doc(id));
+    }
+    try {
+      await batch.commit();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Day reset to auto (kept IN/OUT).')),
+        );
+        setState(() {});
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Reset failed: $e')),
+        );
+      }
+    }
+  }
+
+  // ======== Export Excel (مع عمود Overtime) ========
   Future<void> _exportExcel() async {
     try {
       Query<Map<String, dynamic>> q = FirebaseFirestore.instance
@@ -176,6 +262,7 @@ Future<void> _setPunch({
         return;
       }
 
+      // خريطة أسماء المستخدمين متاحة من الكاش
       final uidSet = <String>{};
       for (final d in docs) {
         final uid = (d.data()['userId'] ?? '').toString();
@@ -186,11 +273,14 @@ Future<void> _setPunch({
         names.putIfAbsent(uid, () => uid);
       }
 
+      // Export.buildPivotExcelBytes يفترض الأعمدة القياسية؛
+      // لو محتاج ندمج Overtime في الـ exporter نفسه، هنمرر البيانات كما هي
       final bytes = await Export.buildPivotExcelBytes(
         attendanceDocs: docs,
         from: _from,
         to: _to,
         userNames: names,
+        // ملاحظة: لو ملف التصدير محتاج حساب Overtime داخله، نقدر نضيف API هناك.
       );
       final filename = 'attendance_${_fmtDay(_from)}_${_fmtDay(_to)}.xlsx';
 
@@ -222,7 +312,7 @@ Future<void> _setPunch({
         .collection('attendance')
         .where('localDay', isGreaterThanOrEqualTo: _fmtDay(_from))
         .where('localDay', isLessThanOrEqualTo: _fmtDay(_to))
-        .orderBy('localDay', descending: true); // نجيب in/out/absent
+        .orderBy('localDay', descending: true);
 
     return Scaffold(
       appBar: AppBar(
@@ -278,17 +368,29 @@ Future<void> _setPunch({
 
                   final docs = snap.data?.docs ?? [];
 
-                  // فلترة بسيطة
+                  // فلترة بالفرع/الشيفت + المستخدم + البحث
                   final filtered = docs.where((d) {
                     final m = d.data();
                     if (widget.userId?.isNotEmpty == true && m['userId'] != widget.userId) return false;
                     if (_branchId?.isNotEmpty == true && m['branchId'] != _branchId) return false;
                     if (_shiftId?.isNotEmpty == true && m['shiftId'] != _shiftId) return false;
+
+                    // بحث بالاسم أو uid
+                    final q = _searchCtrl.text.trim().toLowerCase();
+                    if (q.isNotEmpty) {
+                      final uid = (m['userId'] ?? '').toString().toLowerCase();
+                      final name = (_userNames[uid] ?? _userNames[m['userId']] ?? '').toLowerCase();
+                      if (!(uid.contains(q) || name.contains(q))) return false;
+                    }
                     return true;
                   }).toList();
 
                   // ====== تجميع حسب (userId + localDay) ======
                   final Map<String, _DaySummary> byUserDay = {};
+                  // نجمع الـ IN/OUT المتعددة
+                  final Map<String, List<DateTime>> inTimes = {};
+                  final Map<String, List<DateTime>> outTimes = {};
+
                   for (final d in filtered) {
                     final m = d.data();
                     final uid = (m['userId'] ?? '').toString();
@@ -303,6 +405,18 @@ Future<void> _setPunch({
                       final bNm  = (m['branchName'] ?? u['branchName'] ?? _branchNames[bId] ?? '').toString();
                       final sNm  = (m['shiftName']  ?? u['shiftName']  ?? _shiftNames[sId]  ?? '').toString();
 
+                      // سياسة العمل لكل موظف
+                      final wp = (u['workPolicy'] ?? {}) as Map<String, dynamic>;
+                      final workHours = (wp['workHoursPerDay'] is num)
+                          ? (wp['workHoursPerDay'] as num).toDouble()
+                          : 9.0;
+                      final weekendDays = (wp['weekendDays'] is List)
+                          ? (wp['weekendDays'] as List).map((e) => int.tryParse(e.toString()) ?? -1).where((e) => e >= 0).toList()
+                          : <int>[5, 6];
+                      final holidays = (wp['holidays'] is List)
+                          ? (wp['holidays'] as List).map((e) => e.toString()).toSet()
+                          : <String>{};
+
                       return _DaySummary(
                         uid: uid,
                         userName: _userNames[uid] ?? uid,
@@ -312,26 +426,107 @@ Future<void> _setPunch({
                         branchName: bNm,
                         shiftId: sId,
                         shiftName: sNm,
+                        workHoursPerDay: workHours,
+                        weekendDays: weekendDays,
+                        holidays: holidays,
                       );
                     });
 
                     final typ = (m['type'] ?? '').toString();
                     final at  = m['at'] is Timestamp ? (m['at'] as Timestamp).toDate() : null;
 
-                    if (typ == 'in')  byUserDay[key]!.setIn(at);
-                    if (typ == 'out') byUserDay[key]!.setOut(at);
-                    if (typ == 'absent') byUserDay[key]!.isAbsent = true;
+                    if (typ == 'in' && at != null) {
+                      inTimes.putIfAbsent(key, () => []).add(at);
+                    } else if (typ == 'out' && at != null) {
+                      outTimes.putIfAbsent(key, () => []).add(at);
+                    } else if (typ == 'absent') {
+                      byUserDay[key]!.isAbsent = true;
+                    } else if (typ == 'off') {
+                      byUserDay[key]!.isOff = true;
+                    } else if (typ == 'sick') {
+                      byUserDay[key]!.isSick = true;
+                    } else if (typ == 'leave') {
+                      byUserDay[key]!.isLeave = true;
+                    }
                   }
 
-                  // لو فيه IN/OUT اعتبره ليس غياب
-                  for (final r in byUserDay.values) {
+                  // حساب العمل/الأوفر تايم
+                  for (final entry in byUserDay.entries) {
+                    final key = entry.key;
+                    final r = entry.value;
+
+                    // لو اليوم معلّم Off/Sick/Leave → تجميد الحسابات
+                    if (r.isOff || r.isSick || r.isLeave) {
+                      r.hasIn = r.hasOut = false;
+                      r.workedMinutes = 0;
+                      r.overtimeMinutes = 0;
+                      continue;
+                    }
+
+                    final ins = (inTimes[key] ?? [])..sort();
+                    final outs = (outTimes[key] ?? [])..sort();
+                    r.hasIn = ins.isNotEmpty;
+                    r.hasOut = outs.isNotEmpty;
+
+                    // قرن الأزواج: أقرب OUT لكل IN بالترتيب
+                    int i = 0, j = 0;
+                    int worked = 0;
+                    while (i < ins.length && j < outs.length) {
+                      final inT = ins[i];
+                      final outT = outs[j];
+                      if (outT.isBefore(inT)) {
+                        j++; // OUT قبل IN → تجاهله
+                        continue;
+                      }
+                      worked += outT.difference(inT).inMinutes;
+                      i++; j++;
+                    }
+                    r.workedMinutes = worked;
+
+                    final isWeekend = r.weekendDays.contains(r.date.weekday % 7); // الأحد=0 .. السبت=6 (منصور: weekday 1..7)
+                    final isHoliday = r.holidays.contains(r.localDay);
+                    final scheduled = (isWeekend || isHoliday)
+                        ? 0
+                        : (r.workHoursPerDay * 60).round();
+
+                    r.overtimeMinutes = (worked > scheduled) ? (worked - scheduled) : 0;
+
+                    // IN/OUT أحادية → Missing
+                    if (r.hasIn && !r.hasOut) r.missingOut = true;
+                    if (!r.hasIn && r.hasOut) r.missingIn  = true;
+
+                    // لو في أي IN/OUT نلغي غياب
                     if (r.hasIn || r.hasOut) r.isAbsent = false;
+
+                    // أول قيم عرضية لـ IN/OUT
+                    r.inAt  = ins.isNotEmpty  ? ins.first  : null;
+                    r.outAt = outs.isNotEmpty ? outs.last  : null;
                   }
 
-                  var rows = byUserDay.values.toList()..sort((a, b) => b.date.compareTo(a.date));
-                  if (_onlyEx) rows = rows.where((r) => r.isException).toList();
+                  // فلترة “Only exceptions”
+                  var rows = byUserDay.values.toList()
+                    ..sort((a, b) => b.date.compareTo(a.date));
+                  if (_onlyEx) {
+                    rows = rows.where((r) =>
+                      // الاستثناءات: Absent أو Missing IN/OUT فقط
+                      (r.isAbsent || r.missingIn || r.missingOut)
+                    ).toList();
+                  }
 
-                  if (rows.isEmpty) return const Center(child: Text('No records in the selected range'));
+                  // فلترة البحث النهائي على الصفوف (بالاسم أو uid)
+                  final qtxt = _searchCtrl.text.trim().toLowerCase();
+                  if (qtxt.isNotEmpty) {
+                    rows = rows.where((r) {
+                      final name = (r.userName).toLowerCase();
+                      final uid = r.uid.toLowerCase();
+                      return name.contains(qtxt) || uid.contains(qtxt);
+                    }).toList();
+                  }
+
+                  if (rows.isEmpty) {
+                    return const Center(child: Text('No records in the selected range'));
+                  }
+
                   return ListView.separated(
                     padding: const EdgeInsets.fromLTRB(12, 12, 12, 28),
                     itemCount: rows.length,
@@ -358,6 +553,20 @@ Future<void> _setPunch({
         spacing: 8,
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
+          // بحث
+          SizedBox(
+            width: 260,
+            child: TextField(
+              controller: _searchCtrl,
+              onChanged: (_) => setState(() {}),
+              decoration: const InputDecoration(
+                prefixIcon: Icon(Icons.search),
+                hintText: 'Search name or ID',
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+            ),
+          ),
           OutlinedButton.icon(
             onPressed: _pickFrom,
             icon: const Icon(Icons.date_range),
@@ -444,9 +653,14 @@ Future<void> _setPunch({
   }
 
   Widget _rowTile(_DaySummary r) {
+    // تحديد الحالة والعرض
     String status;
     Color color;
-    if (r.hasIn && r.hasOut) { status = 'Present';     color = Colors.green;  }
+
+    if (r.isOff)   { status = 'Off';   color = Colors.grey;   }
+    else if (r.isSick)  { status = 'Sick';  color = Colors.purple; }
+    else if (r.isLeave) { status = 'Leave'; color = Colors.blue;   }
+    else if (r.hasIn && r.hasOut) { status = 'Present';     color = Colors.green;  }
     else if (r.hasIn && !r.hasOut) { status = 'Missing OUT'; color = Colors.orange; }
     else if (!r.hasIn && r.hasOut) { status = 'Missing IN';  color = Colors.orange; }
     else if (r.isAbsent) { status = 'Absent'; color = Colors.red; }
@@ -454,14 +668,19 @@ Future<void> _setPunch({
 
     final displayBranch = r.branchName.isNotEmpty
         ? r.branchName
-        : (_branchNames[r.branchId] ?? (_usersCache[r.uid]?['branchName'] ?? 'No branch')).toString();
+        : (_branchNames[r.branchId] ?? 'No branch');
     final displayShift = r.shiftName.isNotEmpty
         ? r.shiftName
-        : (_shiftNames[r.shiftId] ?? (_usersCache[r.uid]?['shiftName'] ?? 'No shift')).toString();
+        : (_shiftNames[r.shiftId] ?? 'No shift');
+
+    final showOT = !(r.isOff || r.isSick || r.isLeave); // الحالات دي تتجنب الحسابات
+    final otChip = showOT
+        ? Chip(label: Text('OT ${_fmtHM(r.overtimeMinutes)}'))
+        : const SizedBox.shrink();
 
     return Card(
       child: ListTile(
-        title: Text('${_fmtDay(r.date)} • ${_userNames[r.uid] ?? r.uid}'),
+        title: Text('${_fmtDay(r.date)} • ${r.userName}'),
         subtitle: Wrap(
           spacing: 8, runSpacing: 6, children: [
             Chip(label: Text(status), backgroundColor: color, labelStyle: const TextStyle(color: Colors.white)),
@@ -469,24 +688,41 @@ Future<void> _setPunch({
             Chip(label: Text('OUT ${_fmtTime(r.outAt)}')),
             Chip(label: Text('Branch: $displayBranch')),
             Chip(label: Text('Shift: $displayShift')),
+            otChip,
           ],
         ),
         trailing: widget.allowEditing ? PopupMenuButton<String>(
           onSelected: (v) async {
+            final localDay = r.localDay;
+            final userName = r.userName;
+            final bId = r.branchId;
+            final bName = displayBranch;
+            final sId = r.shiftId;
+            final sName = displayShift;
+
             if (v == 'fix_in' || v == 'edit_in') {
               final tod = await _pickTime(v == 'fix_in' ? 'Fix IN time' : 'Edit IN time');
               if (tod != null) {
                 final when = DateTime(r.date.year, r.date.month, r.date.day, tod.hour, tod.minute);
+                // منع IN بعد OUT
+                if (r.outAt != null && when.isAfter(r.outAt!)) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('IN cannot be after OUT')),
+                    );
+                  }
+                  return;
+                }
                 await _setPunch(
                   uid: r.uid,
-                  localDay: r.localDay,
+                  localDay: localDay,
                   type: 'in',
                   at: when,
-                  userName: _userNames[r.uid] ?? r.uid,
-                  branchId: r.branchId,
-                  branchName: displayBranch,
-                  shiftId: r.shiftId,
-                  shiftName: displayShift,
+                  userName: userName,
+                  branchId: bId,
+                  branchName: bName,
+                  shiftId: sId,
+                  shiftName: sName,
                 );
                 setState(() { r.setIn(when); r.isAbsent = false; });
               }
@@ -495,19 +731,44 @@ Future<void> _setPunch({
               final tod = await _pickTime(v == 'fix_out' ? 'Fix OUT time' : 'Edit OUT time');
               if (tod != null) {
                 final when = DateTime(r.date.year, r.date.month, r.date.day, tod.hour, tod.minute);
+                // منع OUT قبل IN
+                if (r.inAt != null && when.isBefore(r.inAt!)) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('OUT cannot be before IN')),
+                    );
+                  }
+                  return;
+                }
                 await _setPunch(
                   uid: r.uid,
-                  localDay: r.localDay,
+                  localDay: localDay,
                   type: 'out',
                   at: when,
-                  userName: _userNames[r.uid] ?? r.uid,
-                  branchId: r.branchId,
-                  branchName: displayBranch,
-                  shiftId: r.shiftId,
-                  shiftName: displayShift,
+                  userName: userName,
+                  branchId: bId,
+                  branchName: bName,
+                  shiftId: sId,
+                  shiftName: sName,
                 );
                 setState(() { r.setOut(when); r.isAbsent = false; });
               }
+            }
+            if (v == 'mark_off' || v == 'mark_sick' || v == 'mark_leave') {
+              final st = v == 'mark_off' ? 'off' : (v == 'mark_sick' ? 'sick' : 'leave');
+              await _setDayStatus(
+                uid: r.uid,
+                localDay: localDay,
+                statusType: st,
+                userName: userName,
+                branchId: bId,
+                branchName: bName,
+                shiftId: sId,
+                shiftName: sName,
+              );
+            }
+            if (v == 'reset_auto') {
+              await _resetDayAuto(r.uid, localDay);
             }
           },
           itemBuilder: (_) => [
@@ -515,6 +776,12 @@ Future<void> _setPunch({
             if (!r.hasOut) const PopupMenuItem(value: 'fix_out', child: Text('Fix OUT…')),
             if (r.hasIn)   const PopupMenuItem(value: 'edit_in',  child: Text('Edit IN time…')),
             if (r.hasOut)  const PopupMenuItem(value: 'edit_out', child: Text('Edit OUT time…')),
+            const PopupMenuDivider(),
+            const PopupMenuItem(value: 'mark_off',  child: Text('Mark day: Off')),
+            const PopupMenuItem(value: 'mark_sick', child: Text('Mark day: Sick')),
+            const PopupMenuItem(value: 'mark_leave',child: Text('Mark day: Leave')),
+            const PopupMenuDivider(),
+            const PopupMenuItem(value: 'reset_auto', child: Text('Reset day (auto)')),
           ],
         ) : null,
       ),
@@ -533,9 +800,23 @@ class _DaySummary {
   final String shiftId;
   final String shiftName;
 
+  // سياسة الموظف
+  final double workHoursPerDay;
+  final List<int> weekendDays; // 0..6 (أحد..سبت)
+  final Set<String> holidays;  // YYYY-MM-DD
+
   bool hasIn = false;
   bool hasOut = false;
+  bool missingIn = false;
+  bool missingOut = false;
   bool isAbsent = false;
+  bool isOff = false;
+  bool isSick = false;
+  bool isLeave = false;
+
+  int workedMinutes = 0;
+  int overtimeMinutes = 0;
+
   DateTime? inAt;
   DateTime? outAt;
 
@@ -548,14 +829,18 @@ class _DaySummary {
     required this.branchName,
     required this.shiftId,
     required this.shiftName,
+    required this.workHoursPerDay,
+    required this.weekendDays,
+    required this.holidays,
   });
 
   void setIn(DateTime? t) { hasIn = true; if (t != null) inAt = t; }
   void setOut(DateTime? t){ hasOut = true; if (t != null) outAt = t; }
-  bool get isException => !(hasIn && hasOut) || isAbsent;
+
+  bool get isException => isAbsent || missingIn || missingOut;
 }
 
-// ====== Loader لتجميع الـ Streams ======
+// ====== Loader ======
 class _MultiLoader extends StatelessWidget {
   const _MultiLoader({
     required this.usersRef,
