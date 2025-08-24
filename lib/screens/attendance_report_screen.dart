@@ -93,7 +93,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
       showTimePicker(context: context, helpText: title, initialTime: const TimeOfDay(hour: 9, minute: 0));
 
   // ========= أهم جزء: الحفظ + حذف أي absent =========
- Future<void> _setPunch({
+Future<void> _setPunch({
   required String uid,
   required String localDay,   // YYYY-MM-DD
   required String type,       // "in" | "out"
@@ -106,7 +106,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
 }) async {
   final col = FirebaseFirestore.instance.collection('attendance');
 
-  // 1) احفظ IN/OUT
+  // 1) اكتب IN/OUT
   final punchId = '${uid}_${localDay}_$type';
   await col.doc(punchId).set({
     'userId': uid,
@@ -118,15 +118,46 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     'branchName': branchName,
     'shiftId': shiftId,
     'shiftName': shiftName,
+    'source': 'manual',
     'updatedAt': FieldValue.serverTimestamp(),
   }, SetOptions(merge: true));
 
-  // 2) امسح absent مباشرةً بالـ docId (بدون query = بدون index)
+  // 2) امسح الـ absent لنفس اليوم مباشرةً بالـ docId
   final absentId = '${uid}_${localDay}_absent';
-  try {
-    await col.doc(absentId).delete();
-  } catch (_) {
-    // Not found أو ممنوع — نتجاهل
+
+  Future<bool> tryDeleteOnce() async {
+    try {
+      await col.doc(absentId).delete();
+      return true;
+    } catch (_) {
+      // ممكن يكون مش موجود — نتحقق بقراءة
+      final snap = await col.doc(absentId).get();
+      if (snap.exists) {
+        try {
+          await col.doc(absentId).delete();
+          return true;
+        } catch (_) {
+          return false;
+        }
+      }
+      return true; // مفيش absent أصلاً
+    }
+  }
+
+  final ok1 = await tryDeleteOnce();
+  if (!ok1) {
+    // مهلة قصيرة ثم محاولة أخيرة
+    await Future.delayed(const Duration(milliseconds: 200));
+    await tryDeleteOnce();
+  }
+
+  if (mounted) {
+    // لو زر Only exceptions شغال، الأيام اللي اتصلحت هتختفي طبيعي.
+    // نخلي المستخدم عارف ده.
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Saved. If “Only exceptions” is ON, fixed days may disappear.')),
+    );
+    setState(() {}); // اجبر إعادة بناء فورية
   }
 }
 
