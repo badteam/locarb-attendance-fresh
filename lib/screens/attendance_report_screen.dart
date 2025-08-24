@@ -1,8 +1,8 @@
 // lib/screens/attendance_report_screen.dart
-// نسخة كاملة مُحسّنة ودفاعية لإصلاح شاشة البياض ومشكلة No record مع فلاتر الشفت/الفرع والبحث
+// نسخة "Fail-Safe" تمنع شاشة البياض وتتعامل تلقائيًا مع عدم ظهور سجلات بسبب الفلاتر/Only Exceptions/نواقص الحقول.
 
 import 'dart:typed_data';
-import 'dart:html' as html; // لو بتبني للموبايل احذف الاستيراد ده أو استخدم conditional import
+import 'dart:html' as html; // احذفه لو بتبني موبايل فقط
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -19,7 +19,7 @@ class AttendanceReportScreen extends StatefulWidget {
     this.initialRange,
     this.branchId,
     this.shiftId,
-    this.onlyExceptions = true,
+    this.onlyExceptions = false, // كان true — خليناه false
     this.allowEditing = true,
   });
 
@@ -50,6 +50,11 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   final Map<String, String> _branchNames = {};
   final Map<String, String> _shiftNames  = {};
 
+  // إشارات fallback نعرضها كـ Banner
+  bool _relaxedExceptions = false;
+  bool _relaxedBranchShift = false;
+  bool _relaxedSearch = false;
+
   @override
   void initState() {
     super.initState();
@@ -57,7 +62,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     _to   = widget.initialRange?.end   ?? DateTime.now();
     _branchId = widget.branchId;
     _shiftId  = widget.shiftId;
-    _onlyEx   = widget.onlyExceptions; // افتراضيًا ON
+    _onlyEx   = widget.onlyExceptions; // الآن false افتراضيًا
   }
 
   @override
@@ -68,24 +73,20 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
 
   String _fmtDay(DateTime d) =>
       '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
-
   DateTime _parseDay(String ymd) {
     try {
       final p = ymd.split('-');
       return DateTime(int.parse(p[0]), int.parse(p[1]), int.parse(p[2]));
     } catch (_) {
-      // fallback آمن
       return DateTime.now();
     }
   }
-
   String _fmtTime(DateTime? dt) {
     if (dt == null) return '—';
     final h = dt.hour.toString().padLeft(2, '0');
     final m = dt.minute.toString().padLeft(2, '0');
     return '$h:$m';
   }
-
   String _fmtHM(int minutes) {
     final h = (minutes ~/ 60).toString().padLeft(2, '0');
     final m = (minutes % 60).toString().padLeft(2, '0');
@@ -239,7 +240,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     }
   }
 
-  // ======== Export Excel (مع عمود Overtime) ========
+  // ======== Export Excel ========
   Future<void> _exportExcel() async {
     try {
       Query<Map<String, dynamic>> q = FirebaseFirestore.instance
@@ -266,7 +267,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
         return;
       }
 
-      // خريطة أسماء المستخدمين
       final uidSet = <String>{};
       for (final d in docs) {
         final uid = (d.data()['userId'] ?? '').toString();
@@ -356,6 +356,15 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
         },
         child: Column(
           children: [
+            if (_relaxedExceptions || _relaxedBranchShift || _relaxedSearch)
+              _RelaxBanners(
+                relaxedExceptions: _relaxedExceptions,
+                relaxedBranchShift: _relaxedBranchShift,
+                relaxedSearch: _relaxedSearch,
+                onClose: () => setState(() {
+                  _relaxedExceptions = _relaxedBranchShift = _relaxedSearch = false;
+                }),
+              ),
             _filtersBar(branchesRef, shiftsRef),
             const Divider(height: 1),
             Expanded(
@@ -371,191 +380,55 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
 
                   final rawDocs = snap.data?.docs ?? [];
 
-                  // فلترة بالفرع/الشيفت + المستخدم + البحث (مع تساهل لو الحقول ناقصة)
-                  final filtered = rawDocs.where((d) {
-                    final m = d.data();
-                    // user
-                    if (widget.userId?.isNotEmpty == true && (m['userId'] ?? '') != widget.userId) {
-                      return false;
-                    }
-                    // branch (لو اخترت فرع محدد فقط هنفلتر؛ وإلا نسيب اللي مافيهوش branchId تعدي)
-                    if (_branchId?.isNotEmpty == true) {
-                      if ((m['branchId'] ?? '') != _branchId) return false;
-                    }
-                    // shift (نفس منطق الفرع)
-                    if (_shiftId?.isNotEmpty == true) {
-                      if ((m['shiftId'] ?? '') != _shiftId) return false;
-                    }
+                  // 1) فلترة أساسية حسب الفرع/الشيفت/المستخدم/البحث
+                  List<QueryDocumentSnapshot<Map<String, dynamic>>> baseFiltered = _filterDocsPrimary(rawDocs);
 
-                    // بحث بالاسم أو uid
-                    final queryTxt = _searchCtrl.text.trim().toLowerCase();
-                    if (queryTxt.isNotEmpty) {
-                      final uid = (m['userId'] ?? '').toString();
-                      final name = (_userNames[uid] ?? '').toLowerCase();
-                      return uid.toLowerCase().contains(queryTxt) || name.contains(queryTxt);
-                    }
-                    return true;
-                  }).toList();
+                  // 2) تجميع الأيام وحساب الحالة
+                  List<_DaySummary> rows = _summarizeByDay(baseFiltered);
 
-                  // ====== تجميع حسب (userId + localDay) ======
-                  final Map<String, _DaySummary> byUserDay = {};
-                  final Map<String, List<DateTime>> inTimes = {};
-                  final Map<String, List<DateTime>> outTimes = {};
-
-                  for (final d in filtered) {
-                    final m = d.data();
-                    final uid = (m['userId'] ?? '').toString();
-                    final day = (m['localDay'] ?? '').toString();
-                    if (uid.isEmpty || day.isEmpty) continue;
-
-                    final key = '$uid|$day';
-                    byUserDay.putIfAbsent(key, () {
-                      final u    = _usersCache[uid] ?? {};
-                      final bId  = (m['branchId'] ?? u['primaryBranchId'] ?? u['branchId'] ?? '').toString();
-                      final sId  = (m['shiftId']  ?? u['assignedShiftId'] ?? u['shiftId']  ?? '').toString();
-                      final bNm  = (m['branchName'] ?? u['branchName'] ?? _branchNames[bId] ?? '').toString();
-                      final sNm  = (m['shiftName']  ?? u['shiftName']  ?? _shiftNames[sId]  ?? '').toString();
-
-                      // سياسة العمل لكل موظف
-                      final wp = (u['workPolicy'] ?? {}) as Map<String, dynamic>;
-                      final workHours = (wp['workHoursPerDay'] is num)
-                          ? (wp['workHoursPerDay'] as num).toDouble()
-                          : 9.0;
-
-                      // نتعامل معها على نطاق 1..7 (Mon..Sun)
-                      List<int> weekendDays = <int>[5, 6]; // افتراضي: جمعة(5) وسبت(6)
-                      if (wp['weekendDays'] is List) {
-                        final raw = (wp['weekendDays'] as List)
-                            .map((e) => int.tryParse(e.toString()))
-                            .whereType<int>()
-                            .toList();
-                        if (raw.isNotEmpty) weekendDays = raw;
-                      }
-
-                      final holidays = (wp['holidays'] is List)
-                          ? (wp['holidays'] as List).map((e) => e.toString()).toSet()
-                          : <String>{};
-
-                      return _DaySummary(
-                        uid: uid,
-                        userName: _userNames[uid] ?? uid,
-                        localDay: day,
-                        date: _parseDay(day),
-                        branchId: bId,
-                        branchName: bNm,
-                        shiftId: sId,
-                        shiftName: sNm,
-                        workHoursPerDay: workHours,
-                        weekendDays: weekendDays, // 1..7
-                        holidays: holidays,
-                      );
-                    });
-
-                    final typRaw = (m['type'] ?? '').toString().toLowerCase();
-                    final Timestamp? ts = m['at'] is Timestamp ? (m['at'] as Timestamp) : null;
-                    final DateTime? at = ts?.toDate();
-
-                    switch (typRaw) {
-                      case 'in':
-                        if (at != null) {
-                          inTimes.putIfAbsent(key, () => []).add(at);
-                        }
-                        break;
-                      case 'out':
-                        if (at != null) {
-                          outTimes.putIfAbsent(key, () => []).add(at);
-                        }
-                        break;
-                      case 'absent':
-                        byUserDay[key]!.isAbsent = true;
-                        break;
-                      case 'off':
-                        byUserDay[key]!.isOff = true;
-                        break;
-                      case 'sick':
-                        byUserDay[key]!.isSick = true;
-                        break;
-                      case 'leave':
-                        byUserDay[key]!.isLeave = true;
-                        break;
-                      default:
-                        // تجاهل أي أنواع أخرى
-                        break;
-                    }
-                  }
-
-                  // حساب العمل/الأوفر تايم
-                  for (final entry in byUserDay.entries) {
-                    final key = entry.key;
-                    final r = entry.value;
-
-                    // حالات مجمّدة
-                    if (r.isOff || r.isSick || r.isLeave) {
-                      r.hasIn = r.hasOut = false;
-                      r.workedMinutes = 0;
-                      r.overtimeMinutes = 0;
-                      continue;
-                    }
-
-                    final ins = (inTimes[key] ?? [])..sort();
-                    final outs = (outTimes[key] ?? [])..sort();
-                    r.hasIn = ins.isNotEmpty;
-                    r.hasOut = outs.isNotEmpty;
-
-                    int i = 0, j = 0;
-                    int worked = 0;
-                    while (i < ins.length && j < outs.length) {
-                      final inT = ins[i];
-                      final outT = outs[j];
-                      if (outT.isBefore(inT)) {
-                        j++; // OUT قبل IN → تجاهله
-                        continue;
-                      }
-                      worked += outT.difference(inT).inMinutes;
-                      i++; j++;
-                    }
-                    r.workedMinutes = worked;
-
-                    final isWeekend = r.weekendDays.contains(r.date.weekday); // 1..7
-                    final isHoliday = r.holidays.contains(r.localDay);
-                    final scheduled = (isWeekend || isHoliday)
-                        ? 0
-                        : (r.workHoursPerDay * 60).round();
-
-                    r.overtimeMinutes = (worked > scheduled) ? (worked - scheduled) : 0;
-
-                    // IN/OUT أحادية → Missing
-                    if (r.hasIn && !r.hasOut) r.missingOut = true;
-                    if (!r.hasIn && r.hasOut) r.missingIn  = true;
-
-                    // لو في أي IN/OUT نلغي غياب
-                    if (r.hasIn || r.hasOut) r.isAbsent = false;
-
-                    // أول وآخر قيم للعرض
-                    r.inAt  = ins.isNotEmpty  ? ins.first  : null;
-                    r.outAt = outs.isNotEmpty ? outs.last  : null;
-                  }
-
-                  // فلترة “Only exceptions”
-                  var rows = byUserDay.values.toList()
-                    ..sort((a, b) => b.date.compareTo(a.date));
+                  // 3) Only Exceptions
                   if (_onlyEx) {
-                    rows = rows.where((r) => (r.isAbsent || r.missingIn || r.missingOut)).toList();
+                    final onlyExRows = rows.where((r) => r.isAbsent || r.missingIn || r.missingOut).toList();
+                    if (onlyExRows.isEmpty && rows.isNotEmpty) {
+                      // Relax exceptions تلقائيًا
+                      _relaxedExceptions = true;
+                      rows = rows; // اعرض الكل
+                    } else {
+                      rows = onlyExRows;
+                    }
                   }
 
-                  // فلترة البحث النهائي على الصفوف (بالاسم أو uid)
-                  final qtxt = _searchCtrl.text.trim().toLowerCase();
-                  if (qtxt.isNotEmpty) {
-                    rows = rows.where((r) {
-                      final name = (r.userName).toLowerCase();
-                      final uid = r.uid.toLowerCase();
-                      return name.contains(qtxt) || uid.contains(qtxt);
-                    }).toList();
+                  // 4) لو مافيش نتائج، جرّب ترخي الفرع/الشيفت
+                  if (rows.isEmpty && (_branchId?.isNotEmpty == true || _shiftId?.isNotEmpty == true)) {
+                    final relaxedDocs = _filterDocsPrimary(rawDocs, ignoreBranch: true, ignoreShift: true);
+                    var relaxedRows = _summarizeByDay(relaxedDocs);
+                    if (_onlyEx) {
+                      relaxedRows = relaxedRows.where((r) => r.isAbsent || r.missingIn || r.missingOut).toList();
+                    }
+                    if (relaxedRows.isNotEmpty) {
+                      _relaxedBranchShift = true;
+                      rows = relaxedRows;
+                    }
+                  }
+
+                  // 5) لو لسه صفر، ارخي البحث (لو فيه نص بحث)
+                  if (rows.isEmpty && _searchCtrl.text.trim().isNotEmpty) {
+                    final relaxedDocs = _filterDocsPrimary(rawDocs, ignoreSearch: true);
+                    var relaxedRows = _summarizeByDay(relaxedDocs);
+                    if (_onlyEx) {
+                      relaxedRows = relaxedRows.where((r) => r.isAbsent || r.missingIn || r.missingOut).toList();
+                    }
+                    if (relaxedRows.isNotEmpty) {
+                      _relaxedSearch = true;
+                      rows = relaxedRows;
+                    }
                   }
 
                   if (rows.isEmpty) {
                     return const Center(child: Text('No records in the selected range'));
                   }
+
+                  rows.sort((a, b) => b.date.compareTo(a.date));
 
                   return ListView.separated(
                     padding: const EdgeInsets.fromLTRB(12, 12, 12, 28),
@@ -570,6 +443,176 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
         ),
       ),
     );
+  }
+
+  // فلترة أساسية — مع خيارات لتجاهل بعض الفلاتر في الـ fallback
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _filterDocsPrimary(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs, {
+    bool ignoreBranch = false,
+    bool ignoreShift = false,
+    bool ignoreSearch = false,
+  }) {
+    return docs.where((d) {
+      final m = d.data();
+
+      // userId
+      if (widget.userId?.isNotEmpty == true && (m['userId'] ?? '') != widget.userId) {
+        return false;
+      }
+      // branch
+      if (!ignoreBranch && _branchId?.isNotEmpty == true) {
+        if ((m['branchId'] ?? '') != _branchId) return false;
+      }
+      // shift
+      if (!ignoreShift && _shiftId?.isNotEmpty == true) {
+        if ((m['shiftId'] ?? '') != _shiftId) return false;
+      }
+      // search
+      if (!ignoreSearch) {
+        final qtxt = _searchCtrl.text.trim().toLowerCase();
+        if (qtxt.isNotEmpty) {
+          final uid = (m['userId'] ?? '').toString();
+          final nameCache = (_userNames[uid] ?? '').toLowerCase();
+          final nameInDoc = (m['userName'] ?? '').toString().toLowerCase();
+          final anyMatch = uid.toLowerCase().contains(qtxt)
+                        || nameCache.contains(qtxt)
+                        || nameInDoc.contains(qtxt);
+          if (!anyMatch) return false;
+        }
+      }
+      return true;
+    }).toList();
+  }
+
+  // تجميع حسب (userId + localDay) + حساب العمل/الأوفر تايم/الغياب
+  List<_DaySummary> _summarizeByDay(List<QueryDocumentSnapshot<Map<String, dynamic>>> filtered) {
+    final Map<String, _DaySummary> byUserDay = {};
+    final Map<String, List<DateTime>> inTimes = {};
+    final Map<String, List<DateTime>> outTimes = {};
+
+    for (final d in filtered) {
+      final m = d.data();
+      final uid = (m['userId'] ?? '').toString();
+      final day = (m['localDay'] ?? '').toString();
+      if (uid.isEmpty || day.isEmpty) continue;
+
+      final key = '$uid|$day';
+      byUserDay.putIfAbsent(key, () {
+        final u    = _usersCache[uid] ?? {};
+        final bId  = (m['branchId'] ?? u['primaryBranchId'] ?? u['branchId'] ?? '').toString();
+        final sId  = (m['shiftId']  ?? u['assignedShiftId'] ?? u['shiftId']  ?? '').toString();
+        final bNm  = (m['branchName'] ?? u['branchName'] ?? _branchNames[bId] ?? '').toString();
+        final sNm  = (m['shiftName']  ?? u['shiftName']  ?? _shiftNames[sId]  ?? '').toString();
+
+        // سياسة العمل
+        final wp = (u['workPolicy'] ?? {}) as Map<String, dynamic>;
+        final workHours = (wp['workHoursPerDay'] is num)
+            ? (wp['workHoursPerDay'] as num).toDouble()
+            : 9.0;
+        List<int> weekendDays = <int>[5, 6]; // Fri=5, Sat=6 (Dart weekday 1..7)
+        if (wp['weekendDays'] is List) {
+          final raw = (wp['weekendDays'] as List)
+              .map((e) => int.tryParse(e.toString()))
+              .whereType<int>()
+              .toList();
+          if (raw.isNotEmpty) weekendDays = raw;
+        }
+        final holidays = (wp['holidays'] is List)
+            ? (wp['holidays'] as List).map((e) => e.toString()).toSet()
+            : <String>{};
+
+        return _DaySummary(
+          uid: uid,
+          userName: _userNames[uid] ?? (m['userName'] ?? uid).toString(),
+          localDay: day,
+          date: _parseDay(day),
+          branchId: bId,
+          branchName: bNm,
+          shiftId: sId,
+          shiftName: sNm,
+          workHoursPerDay: workHours,
+          weekendDays: weekendDays,
+          holidays: holidays,
+        );
+      });
+
+      final typRaw = (m['type'] ?? '').toString().toLowerCase();
+      final Timestamp? ts = m['at'] is Timestamp ? (m['at'] as Timestamp) : null;
+      final DateTime? at = ts?.toDate();
+
+      switch (typRaw) {
+        case 'in':
+          if (at != null) {
+            inTimes.putIfAbsent(key, () => []).add(at);
+          }
+          break;
+        case 'out':
+          if (at != null) {
+            outTimes.putIfAbsent(key, () => []).add(at);
+          }
+          break;
+        case 'absent':
+          byUserDay[key]!.isAbsent = true;
+          break;
+        case 'off':
+          byUserDay[key]!.isOff = true;
+          break;
+        case 'sick':
+          byUserDay[key]!.isSick = true;
+          break;
+        case 'leave':
+          byUserDay[key]!.isLeave = true;
+          break;
+        default:
+          break;
+      }
+    }
+
+    // حسابات
+    for (final entry in byUserDay.entries) {
+      final key = entry.key;
+      final r = entry.value;
+
+      if (r.isOff || r.isSick || r.isLeave) {
+        r.hasIn = r.hasOut = false;
+        r.workedMinutes = 0;
+        r.overtimeMinutes = 0;
+        continue;
+      }
+
+      final ins = (inTimes[key] ?? [])..sort();
+      final outs = (outTimes[key] ?? [])..sort();
+      r.hasIn = ins.isNotEmpty;
+      r.hasOut = outs.isNotEmpty;
+
+      int i = 0, j = 0;
+      int worked = 0;
+      while (i < ins.length && j < outs.length) {
+        final inT = ins[i];
+        final outT = outs[j];
+        if (outT.isBefore(inT)) {
+          j++;
+          continue;
+        }
+        worked += outT.difference(inT).inMinutes;
+        i++; j++;
+      }
+      r.workedMinutes = worked;
+
+      final isWeekend = r.weekendDays.contains(r.date.weekday); // 1..7
+      final isHoliday = r.holidays.contains(r.localDay);
+      final scheduled = (isWeekend || isHoliday) ? 0 : (r.workHoursPerDay * 60).round();
+      r.overtimeMinutes = worked > scheduled ? worked - scheduled : 0;
+
+      if (r.hasIn && !r.hasOut) r.missingOut = true;
+      if (!r.hasIn && r.hasOut) r.missingIn  = true;
+      if (r.hasIn || r.hasOut) r.isAbsent = false;
+
+      r.inAt  = ins.isNotEmpty  ? ins.first  : null;
+      r.outAt = outs.isNotEmpty ? outs.last  : null;
+    }
+
+    return byUserDay.values.toList();
   }
 
   Widget _filtersBar(
@@ -630,7 +673,10 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                   child: DropdownButton<String>(
                     value: _branchId ?? '',
                     items: items,
-                    onChanged: (v) => setState(() => _branchId = (v ?? '').isEmpty ? null : v),
+                    onChanged: (v) => setState(() {
+                      _branchId = (v ?? '').isEmpty ? null : v;
+                      _relaxedBranchShift = false; // إعادة ضبط البانر عند تغيّر الفلتر
+                    }),
                   ),
                 ),
               );
@@ -659,7 +705,10 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                   child: DropdownButton<String>(
                     value: _shiftId ?? '',
                     items: items,
-                    onChanged: (v) => setState(() => _shiftId = (v ?? '').isEmpty ? null : v),
+                    onChanged: (v) => setState(() {
+                      _shiftId = (v ?? '').isEmpty ? null : v;
+                      _relaxedBranchShift = false;
+                    }),
                   ),
                 ),
               );
@@ -669,7 +718,10 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
           FilterChip(
             label: const Text('Only exceptions'),
             selected: _onlyEx,
-            onSelected: (v) => setState(() => _onlyEx = v),
+            onSelected: (v) => setState(() {
+              _onlyEx = v;
+              _relaxedExceptions = false;
+            }),
           ),
           // Export
           FilledButton.icon(
@@ -683,7 +735,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   }
 
   Widget _rowTile(_DaySummary r) {
-    // تحديد الحالة والعرض
     String status;
     Color color;
 
@@ -816,6 +867,38 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   }
 }
 
+// ====== بانرات التخفيف ======
+class _RelaxBanners extends StatelessWidget {
+  const _RelaxBanners({
+    required this.relaxedExceptions,
+    required this.relaxedBranchShift,
+    required this.relaxedSearch,
+    required this.onClose,
+  });
+
+  final bool relaxedExceptions;
+  final bool relaxedBranchShift;
+  final bool relaxedSearch;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    final msgs = <String>[];
+    if (relaxedExceptions) msgs.add('Showing all days (Only exceptions was hiding everything).');
+    if (relaxedBranchShift) msgs.add('Branch/Shift filter relaxed to show data.');
+    if (relaxedSearch) msgs.add('Search filter relaxed to show data.');
+    if (msgs.isEmpty) return const SizedBox.shrink();
+
+    return MaterialBanner(
+      content: Text(msgs.join('  •  ')),
+      leading: const Icon(Icons.info_outline),
+      actions: [
+        TextButton(onPressed: onClose, child: const Text('Hide')),
+      ],
+    );
+  }
+}
+
 // ====== موديل اليوم الواحد ======
 class _DaySummary {
   final String uid;
@@ -827,7 +910,6 @@ class _DaySummary {
   final String shiftId;
   final String shiftName;
 
-  // سياسة الموظف
   final double workHoursPerDay;
   final List<int> weekendDays; // 1..7 (Mon..Sun)
   final Set<String> holidays;  // YYYY-MM-DD
