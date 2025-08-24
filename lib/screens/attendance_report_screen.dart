@@ -40,7 +40,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   String? _shiftId;
   late bool _onlyEx;
 
-  // caches
   final Map<String, Map<String, dynamic>> _usersCache = {};
   final Map<String, String> _userNames = {};
   final Map<String, String> _branchNames = {};
@@ -151,7 +150,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     }
   }
 
-  // ======== تعليم اليوم Off/Sick/Leave + تجاهل الحسابات ========
+  // ======== تعليم اليوم Off/Sick/Leave ========
   Future<void> _setDayStatus({
     required String uid,
     required String localDay,
@@ -178,7 +177,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
       'shiftName': shiftName,
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
-    batch.delete(col.doc(absentId)); // نظافة
+    batch.delete(col.doc(absentId));
 
     try {
       await batch.commit();
@@ -197,7 +196,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     }
   }
 
-  // ======== Reset Auto: امسح حالات اليوم واترك IN/OUT ========
+  // ======== Reset Auto ========
   Future<void> _resetDayAuto(String uid, String localDay) async {
     final col = FirebaseFirestore.instance.collection('attendance');
     final ids = [
@@ -242,15 +241,28 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
       final snap = await q.get();
       var docs = snap.docs;
 
-      if (widget.userId?.isNotEmpty == true) {
-        docs = docs.where((d) => (d.data()['userId'] ?? '') == widget.userId).toList();
-      }
-      if (_branchId?.isNotEmpty == true) {
-        docs = docs.where((d) => (d.data()['branchId'] ?? '') == _branchId).toList();
-      }
-      if (_shiftId?.isNotEmpty == true) {
-        docs = docs.where((d) => (d.data()['shiftId'] ?? '') == _shiftId).toList();
-      }
+      // فلترة مرنة للفرع/الشيفت (ID أو Name)
+      docs = docs.where((d) {
+        final m = d.data();
+        if (widget.userId?.isNotEmpty == true && m['userId'] != widget.userId) return false;
+
+        if (_branchId?.isNotEmpty == true) {
+          final docBid   = (m['branchId'] ?? '').toString();
+          final docBname = (m['branchName'] ?? '').toString();
+          final wantBname = _branchNames[_branchId!] ?? '';
+          if (!(docBid == _branchId || (wantBname.isNotEmpty && docBname == wantBname))) return false;
+        }
+
+        if (_shiftId?.isNotEmpty == true) {
+          final docSid   = (m['shiftId'] ?? '').toString();
+          final docSname = (m['shiftName'] ?? '').toString();
+          final wantSname = _shiftNames[_shiftId!] ?? '';
+          if (!(docSid == _shiftId || (wantSname.isNotEmpty && docSname == wantSname))) return false;
+        }
+
+        return true;
+      }).toList();
+
       if (docs.isEmpty) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No records to export for this range')));
@@ -293,7 +305,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     }
   }
 
-  // ======== الاستعلام الأصلي مع where مزدوج + orderBy ========
+  // ======== الاستعلام الأصلي ========
   Query<Map<String, dynamic>> _buildAttendanceQuery() {
     DateTime from = _from, to = _to;
     if (from.isAfter(to)) { final t = from; from = to; to = t; }
@@ -305,7 +317,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
         .orderBy('localDay', descending: true);
   }
 
-  // ======== Fallback لو الكويري الأساسي رجّع صفر ========
+  // ======== Fallback ========
   Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>> _fallbackFetch() async {
     final snap = await FirebaseFirestore.instance
         .collection('attendance')
@@ -384,10 +396,8 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                     return const Center(child: CircularProgressIndicator());
                   }
 
-                  // نتائج الاستعلام الأساسي
                   List<QueryDocumentSnapshot<Map<String, dynamic>>> baseDocs = snap.data?.docs ?? [];
 
-                  // لو صفر → جرّب fallback
                   return FutureBuilder<List<QueryDocumentSnapshot<Map<String, dynamic>>>>(
                     future: baseDocs.isEmpty ? _fallbackFetch() : Future.value(baseDocs),
                     builder: (context, fb) {
@@ -398,12 +408,26 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
 
                       List<QueryDocumentSnapshot<Map<String, dynamic>>> docs = fb.data ?? baseDocs;
 
-                      // فلترة أساسية (user/branch/shift)
+                      // ========= فلترة مرنة للفرع/الشيفت =========
                       final filtered = docs.where((d) {
                         final m = d.data();
+
                         if (widget.userId?.isNotEmpty == true && m['userId'] != widget.userId) return false;
-                        if (_branchId?.isNotEmpty == true && m['branchId'] != _branchId) return false;
-                        if (_shiftId?.isNotEmpty == true && m['shiftId'] != _shiftId) return false;
+
+                        if (_branchId?.isNotEmpty == true) {
+                          final docBid   = (m['branchId'] ?? '').toString();
+                          final docBname = (m['branchName'] ?? '').toString();
+                          final wantBname = _branchNames[_branchId!] ?? '';
+                          if (!(docBid == _branchId || (wantBname.isNotEmpty && docBname == wantBname))) return false;
+                        }
+
+                        if (_shiftId?.isNotEmpty == true) {
+                          final docSid   = (m['shiftId'] ?? '').toString();
+                          final docSname = (m['shiftName'] ?? '').toString();
+                          final wantSname = _shiftNames[_shiftId!] ?? '';
+                          if (!(docSid == _shiftId || (wantSname.isNotEmpty && docSname == wantSname))) return false;
+                        }
+
                         return true;
                       }).toList();
 
@@ -426,13 +450,12 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                           final bNm  = (m['branchName'] ?? u['branchName'] ?? _branchNames[bId] ?? '').toString();
                           final sNm  = (m['shiftName']  ?? u['shiftName']  ?? _shiftNames[sId]  ?? '').toString();
 
-                          // سياسة العمل
                           final wp = (u['workPolicy'] ?? {}) as Map<String, dynamic>;
                           final workHours = (wp['workHoursPerDay'] is num)
                               ? (wp['workHoursPerDay'] as num).toDouble()
                               : 9.0;
 
-                          List<int> weekendDays = <int>[5, 6]; // Fri, Sat افتراضيًا
+                          List<int> weekendDays = <int>[5, 6];
                           if (wp['weekendDays'] is List) {
                             final raw = (wp['weekendDays'] as List)
                                 .map((e) => int.tryParse(e.toString()))
@@ -532,25 +555,11 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
 
                       rows.sort((a, b) => b.date.compareTo(a.date));
 
-                      // عرض + سطر تشخيصي بسيط
-                      return Column(
-                        children: [
-                          Expanded(
-                            child: ListView.separated(
-                              padding: const EdgeInsets.fromLTRB(12, 12, 12, 28),
-                              itemCount: rows.length,
-                              separatorBuilder: (_, __) => const SizedBox(height: 8),
-                              itemBuilder: (_, i) => _rowTile(rows[i]),
-                            ),
-                          ),
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 6),
-                            child: Text(
-                              'debug: base=${baseDocs.length}, after-fallback=${docs.length}, rows=${rows.length}',
-                              style: const TextStyle(fontSize: 11, color: Colors.white54),
-                            ),
-                          ),
-                        ],
+                      return ListView.separated(
+                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 28),
+                        itemCount: rows.length,
+                        separatorBuilder: (_, __) => const SizedBox(height: 8),
+                        itemBuilder: (_, i) => _rowTile(rows[i]),
                       );
                     },
                   );
@@ -793,7 +802,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   }
 }
 
-// ====== موديل اليوم الواحد بالـ OT ======
+// ====== موديل اليوم الواحد ======
 class _DaySummary {
   final String uid;
   final String userName;
@@ -804,7 +813,6 @@ class _DaySummary {
   final String shiftId;
   final String shiftName;
 
-  // سياسة الموظف
   final double workHoursPerDay;
   final List<int> weekendDays; // 1..7 (Mon..Sun)
   final Set<String> holidays;  // YYYY-MM-DD
