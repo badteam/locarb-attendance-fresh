@@ -244,11 +244,11 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   Future<void> _exportExcel() async {
     try {
       // بدون index: استخدم orderBy + startAt/endAt
-      final q = FirebaseFirestore.instance
-          .collection('attendance')
-          .orderBy('localDay', descending: false)
-          .startAt([_fmtDay(_from)])
-          .endAt([_fmtDay(_to)]);
+     final q = FirebaseFirestore.instance
+    .collection('attendance')
+    .orderBy('localDay')             // ascending
+    .startAt([_fmtDay(_from)])       // >= from
+    .endAt([_fmtDay(_to)]);          // <= to
 
       final snap = await q.get();
       var docs = snap.docs;
