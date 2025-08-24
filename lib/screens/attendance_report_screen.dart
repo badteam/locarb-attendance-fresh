@@ -293,7 +293,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     }
   }
 
-  // ======== الاستعلام الأصلي مع orderBy + where مزدوج ========
+  // ======== الاستعلام الأصلي مع where مزدوج + orderBy ========
   Query<Map<String, dynamic>> _buildAttendanceQuery() {
     DateTime from = _from, to = _to;
     if (from.isAfter(to)) { final t = from; from = to; to = t; }
@@ -303,6 +303,25 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
         .where('localDay', isGreaterThanOrEqualTo: _fmtDay(from))
         .where('localDay', isLessThanOrEqualTo: _fmtDay(to))
         .orderBy('localDay', descending: true);
+  }
+
+  // ======== Fallback لو الكويري الأساسي رجّع صفر ========
+  Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>> _fallbackFetch() async {
+    final snap = await FirebaseFirestore.instance
+        .collection('attendance')
+        .orderBy('localDay', descending: true)
+        .limit(200)
+        .get();
+
+    final fromStr = _fmtDay(_from);
+    final toStr   = _fmtDay(_to);
+
+    return snap.docs.where((d) {
+      final m = d.data();
+      final day = (m['localDay'] ?? '').toString();
+      if (day.isEmpty) return false;
+      return day.compareTo(fromStr) >= 0 && day.compareTo(toStr) <= 0;
+    }).toList();
   }
 
   @override
@@ -365,148 +384,175 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                     return const Center(child: CircularProgressIndicator());
                   }
 
-                  final docs = snap.data?.docs ?? [];
+                  // نتائج الاستعلام الأساسي
+                  List<QueryDocumentSnapshot<Map<String, dynamic>>> baseDocs = snap.data?.docs ?? [];
 
-                  // فلترة أساسية (user/branch/shift)
-                  final filtered = docs.where((d) {
-                    final m = d.data();
-                    if (widget.userId?.isNotEmpty == true && m['userId'] != widget.userId) return false;
-                    if (_branchId?.isNotEmpty == true && m['branchId'] != _branchId) return false;
-                    if (_shiftId?.isNotEmpty == true && m['shiftId'] != _shiftId) return false;
-                    return true;
-                  }).toList();
-
-                  // ====== تجميع حسب (userId + localDay) ======
-                  final Map<String, _DaySummary> byUserDay = {};
-                  final Map<String, List<DateTime>> inTimes = {};
-                  final Map<String, List<DateTime>> outTimes = {};
-
-                  for (final d in filtered) {
-                    final m = d.data();
-                    final uid = (m['userId'] ?? '').toString();
-                    final day = (m['localDay'] ?? '').toString();
-                    if (uid.isEmpty || day.isEmpty) continue;
-
-                    final key = '$uid|$day';
-                    byUserDay.putIfAbsent(key, () {
-                      final u    = _usersCache[uid] ?? {};
-                      final bId  = (m['branchId'] ?? u['primaryBranchId'] ?? u['branchId'] ?? '').toString();
-                      final sId  = (m['shiftId']  ?? u['assignedShiftId'] ?? u['shiftId']  ?? '').toString();
-                      final bNm  = (m['branchName'] ?? u['branchName'] ?? _branchNames[bId] ?? '').toString();
-                      final sNm  = (m['shiftName']  ?? u['shiftName']  ?? _shiftNames[sId]  ?? '').toString();
-
-                      // سياسة العمل
-                      final wp = (u['workPolicy'] ?? {}) as Map<String, dynamic>;
-                      final workHours = (wp['workHoursPerDay'] is num)
-                          ? (wp['workHoursPerDay'] as num).toDouble()
-                          : 9.0;
-
-                      // Dart weekday: 1..7 (Mon..Sun). افتراضي: جمعة(5)/سبت(6)
-                      List<int> weekendDays = <int>[5, 6];
-                      if (wp['weekendDays'] is List) {
-                        final raw = (wp['weekendDays'] as List)
-                            .map((e) => int.tryParse(e.toString()))
-                            .whereType<int>()
-                            .toList();
-                        if (raw.isNotEmpty) weekendDays = raw;
+                  // لو صفر → جرّب fallback
+                  return FutureBuilder<List<QueryDocumentSnapshot<Map<String, dynamic>>>>(
+                    future: baseDocs.isEmpty ? _fallbackFetch() : Future.value(baseDocs),
+                    builder: (context, fb) {
+                      if (fb.connectionState == ConnectionState.waiting && baseDocs.isEmpty) {
+                        return const Center(child: CircularProgressIndicator());
                       }
-                      final holidays = (wp['holidays'] is List)
-                          ? (wp['holidays'] as List).map((e) => e.toString()).toSet()
-                          : <String>{};
+                      if (fb.hasError) return _ErrorBox(error: fb.error.toString());
 
-                      return _DaySummary(
-                        uid: uid,
-                        userName: _userNames[uid] ?? (m['userName'] ?? uid).toString(),
-                        localDay: day,
-                        date: _parseDay(day),
-                        branchId: bId,
-                        branchName: bNm,
-                        shiftId: sId,
-                        shiftName: sNm,
-                        workHoursPerDay: workHours,
-                        weekendDays: weekendDays,
-                        holidays: holidays,
+                      List<QueryDocumentSnapshot<Map<String, dynamic>>> docs = fb.data ?? baseDocs;
+
+                      // فلترة أساسية (user/branch/shift)
+                      final filtered = docs.where((d) {
+                        final m = d.data();
+                        if (widget.userId?.isNotEmpty == true && m['userId'] != widget.userId) return false;
+                        if (_branchId?.isNotEmpty == true && m['branchId'] != _branchId) return false;
+                        if (_shiftId?.isNotEmpty == true && m['shiftId'] != _shiftId) return false;
+                        return true;
+                      }).toList();
+
+                      // ====== تجميع حسب (userId + localDay) ======
+                      final Map<String, _DaySummary> byUserDay = {};
+                      final Map<String, List<DateTime>> inTimes = {};
+                      final Map<String, List<DateTime>> outTimes = {};
+
+                      for (final d in filtered) {
+                        final m = d.data();
+                        final uid = (m['userId'] ?? '').toString();
+                        final day = (m['localDay'] ?? '').toString();
+                        if (uid.isEmpty || day.isEmpty) continue;
+
+                        final key = '$uid|$day';
+                        byUserDay.putIfAbsent(key, () {
+                          final u    = _usersCache[uid] ?? {};
+                          final bId  = (m['branchId'] ?? u['primaryBranchId'] ?? u['branchId'] ?? '').toString();
+                          final sId  = (m['shiftId']  ?? u['assignedShiftId'] ?? u['shiftId']  ?? '').toString();
+                          final bNm  = (m['branchName'] ?? u['branchName'] ?? _branchNames[bId] ?? '').toString();
+                          final sNm  = (m['shiftName']  ?? u['shiftName']  ?? _shiftNames[sId]  ?? '').toString();
+
+                          // سياسة العمل
+                          final wp = (u['workPolicy'] ?? {}) as Map<String, dynamic>;
+                          final workHours = (wp['workHoursPerDay'] is num)
+                              ? (wp['workHoursPerDay'] as num).toDouble()
+                              : 9.0;
+
+                          List<int> weekendDays = <int>[5, 6]; // Fri, Sat افتراضيًا
+                          if (wp['weekendDays'] is List) {
+                            final raw = (wp['weekendDays'] as List)
+                                .map((e) => int.tryParse(e.toString()))
+                                .whereType<int>()
+                                .toList();
+                            if (raw.isNotEmpty) weekendDays = raw;
+                          }
+                          final holidays = (wp['holidays'] is List)
+                              ? (wp['holidays'] as List).map((e) => e.toString()).toSet()
+                              : <String>{};
+
+                          return _DaySummary(
+                            uid: uid,
+                            userName: _userNames[uid] ?? (m['userName'] ?? uid).toString(),
+                            localDay: day,
+                            date: _parseDay(day),
+                            branchId: bId,
+                            branchName: bNm,
+                            shiftId: sId,
+                            shiftName: sNm,
+                            workHoursPerDay: workHours,
+                            weekendDays: weekendDays,
+                            holidays: holidays,
+                          );
+                        });
+
+                        final typ = (m['type'] ?? '').toString().toLowerCase();
+                        final at  = m['at'] is Timestamp ? (m['at'] as Timestamp).toDate() : null;
+
+                        if (typ == 'in' && at != null) {
+                          inTimes.putIfAbsent(key, () => []).add(at);
+                        } else if (typ == 'out' && at != null) {
+                          outTimes.putIfAbsent(key, () => []).add(at);
+                        } else if (typ == 'absent') {
+                          byUserDay[key]!.isAbsent = true;
+                        } else if (typ == 'off') {
+                          byUserDay[key]!.isOff = true;
+                        } else if (typ == 'sick') {
+                          byUserDay[key]!.isSick = true;
+                        } else if (typ == 'leave') {
+                          byUserDay[key]!.isLeave = true;
+                        }
+                      }
+
+                      // حساب العمل/OT + Missing IN/OUT
+                      for (final entry in byUserDay.entries) {
+                        final key = entry.key;
+                        final r = entry.value;
+
+                        if (r.isOff || r.isSick || r.isLeave) {
+                          r.hasIn = r.hasOut = false;
+                          r.workedMinutes = 0;
+                          r.overtimeMinutes = 0;
+                          continue;
+                        }
+
+                        final ins = (inTimes[key] ?? [])..sort();
+                        final outs = (outTimes[key] ?? [])..sort();
+                        r.hasIn = ins.isNotEmpty;
+                        r.hasOut = outs.isNotEmpty;
+
+                        int i = 0, j = 0, worked = 0;
+                        while (i < ins.length && j < outs.length) {
+                          final inT = ins[i];
+                          final outT = outs[j];
+                          if (outT.isBefore(inT)) { j++; continue; }
+                          worked += outT.difference(inT).inMinutes;
+                          i++; j++;
+                        }
+                        r.workedMinutes = worked;
+
+                        final isWeekend = r.weekendDays.contains(r.date.weekday);
+                        final isHoliday = r.holidays.contains(r.localDay);
+                        final scheduled = (isWeekend || isHoliday) ? 0 : (r.workHoursPerDay * 60).round();
+                        r.overtimeMinutes = worked > scheduled ? worked - scheduled : 0;
+
+                        if (r.hasIn && !r.hasOut) r.missingOut = true;
+                        if (!r.hasIn && r.hasOut) r.missingIn  = true;
+
+                        if (r.hasIn || r.hasOut) r.isAbsent = false;
+
+                        r.inAt  = ins.isNotEmpty  ? ins.first  : null;
+                        r.outAt = outs.isNotEmpty ? outs.last  : null;
+                      }
+
+                      // Only exceptions
+                      var rows = byUserDay.values.toList();
+                      if (_onlyEx) rows = rows.where((r) => r.isAbsent || r.missingIn || r.missingOut).toList();
+
+                      if (rows.isEmpty) {
+                        final hasAnyDocs = docs.isNotEmpty;
+                        final msg = _onlyEx && hasAnyDocs
+                            ? 'No exceptions in this range'
+                            : 'No records in the selected range';
+                        return Center(child: Text(msg));
+                      }
+
+                      rows.sort((a, b) => b.date.compareTo(a.date));
+
+                      // عرض + سطر تشخيصي بسيط
+                      return Column(
+                        children: [
+                          Expanded(
+                            child: ListView.separated(
+                              padding: const EdgeInsets.fromLTRB(12, 12, 12, 28),
+                              itemCount: rows.length,
+                              separatorBuilder: (_, __) => const SizedBox(height: 8),
+                              itemBuilder: (_, i) => _rowTile(rows[i]),
+                            ),
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 6),
+                            child: Text(
+                              'debug: base=${baseDocs.length}, after-fallback=${docs.length}, rows=${rows.length}',
+                              style: const TextStyle(fontSize: 11, color: Colors.white54),
+                            ),
+                          ),
+                        ],
                       );
-                    });
-
-                    final typ = (m['type'] ?? '').toString().toLowerCase();
-                    final at  = m['at'] is Timestamp ? (m['at'] as Timestamp).toDate() : null;
-
-                    if (typ == 'in' && at != null) {
-                      inTimes.putIfAbsent(key, () => []).add(at);
-                    } else if (typ == 'out' && at != null) {
-                      outTimes.putIfAbsent(key, () => []).add(at);
-                    } else if (typ == 'absent') {
-                      byUserDay[key]!.isAbsent = true;
-                    } else if (typ == 'off') {
-                      byUserDay[key]!.isOff = true;
-                    } else if (typ == 'sick') {
-                      byUserDay[key]!.isSick = true;
-                    } else if (typ == 'leave') {
-                      byUserDay[key]!.isLeave = true;
-                    }
-                  }
-
-                  // حساب العمل/OT + Missing IN/OUT
-                  for (final entry in byUserDay.entries) {
-                    final key = entry.key;
-                    final r = entry.value;
-
-                    if (r.isOff || r.isSick || r.isLeave) {
-                      r.hasIn = r.hasOut = false;
-                      r.workedMinutes = 0;
-                      r.overtimeMinutes = 0;
-                      continue;
-                    }
-
-                    final ins = (inTimes[key] ?? [])..sort();
-                    final outs = (outTimes[key] ?? [])..sort();
-                    r.hasIn = ins.isNotEmpty;
-                    r.hasOut = outs.isNotEmpty;
-
-                    int i = 0, j = 0, worked = 0;
-                    while (i < ins.length && j < outs.length) {
-                      final inT = ins[i];
-                      final outT = outs[j];
-                      if (outT.isBefore(inT)) { j++; continue; }
-                      worked += outT.difference(inT).inMinutes;
-                      i++; j++;
-                    }
-                    r.workedMinutes = worked;
-
-                    final isWeekend = r.weekendDays.contains(r.date.weekday);
-                    final isHoliday = r.holidays.contains(r.localDay);
-                    final scheduled = (isWeekend || isHoliday) ? 0 : (r.workHoursPerDay * 60).round();
-                    r.overtimeMinutes = worked > scheduled ? worked - scheduled : 0;
-
-                    if (r.hasIn && !r.hasOut) r.missingOut = true;
-                    if (!r.hasIn && r.hasOut) r.missingIn  = true;
-
-                    if (r.hasIn || r.hasOut) r.isAbsent = false;
-
-                    r.inAt  = ins.isNotEmpty  ? ins.first  : null;
-                    r.outAt = outs.isNotEmpty ? outs.last  : null;
-                  }
-
-                  // Only exceptions
-                  var rows = byUserDay.values.toList();
-                  if (_onlyEx) rows = rows.where((r) => r.isAbsent || r.missingIn || r.missingOut).toList();
-
-                  if (rows.isEmpty) {
-                    final hasAnyDocs = docs.isNotEmpty;
-                    final msg = _onlyEx && hasAnyDocs
-                        ? 'No exceptions in this range'
-                        : 'No records in the selected range';
-                    return Center(child: Text(msg));
-                  }
-
-                  rows.sort((a, b) => b.date.compareTo(a.date));
-
-                  return ListView.separated(
-                    padding: const EdgeInsets.fromLTRB(12, 12, 12, 28),
-                    itemCount: rows.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 8),
-                    itemBuilder: (_, i) => _rowTile(rows[i]),
+                    },
                   );
                 },
               ),
