@@ -106,7 +106,7 @@ Future<void> _setPunch({
 }) async {
   final col = FirebaseFirestore.instance.collection('attendance');
 
-  // 1) اكتب IN/OUT
+  // docId للـ IN/OUT
   final punchId = '${uid}_${localDay}_$type';
   await col.doc(punchId).set({
     'userId': uid,
@@ -122,42 +122,23 @@ Future<void> _setPunch({
     'updatedAt': FieldValue.serverTimestamp(),
   }, SetOptions(merge: true));
 
-  // 2) امسح الـ absent لنفس اليوم مباشرةً بالـ docId
+  // docId للـ absent
   final absentId = '${uid}_${localDay}_absent';
+  final absentRef = col.doc(absentId);
 
-  Future<bool> tryDeleteOnce() async {
-    try {
-      await col.doc(absentId).delete();
-      return true;
-    } catch (_) {
-      // ممكن يكون مش موجود — نتحقق بقراءة
-      final snap = await col.doc(absentId).get();
-      if (snap.exists) {
-        try {
-          await col.doc(absentId).delete();
-          return true;
-        } catch (_) {
-          return false;
-        }
-      }
-      return true; // مفيش absent أصلاً
-    }
-  }
-
-  final ok1 = await tryDeleteOnce();
-  if (!ok1) {
-    // مهلة قصيرة ثم محاولة أخيرة
-    await Future.delayed(const Duration(milliseconds: 200));
-    await tryDeleteOnce();
+  final snap = await absentRef.get();
+  if (snap.exists) {
+    await absentRef.delete();
+    debugPrint('Deleted absent record: $absentId');
+  } else {
+    debugPrint('No absent record found for $absentId');
   }
 
   if (mounted) {
-    // لو زر Only exceptions شغال، الأيام اللي اتصلحت هتختفي طبيعي.
-    // نخلي المستخدم عارف ده.
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Saved. If “Only exceptions” is ON, fixed days may disappear.')),
+      const SnackBar(content: Text('Attendance saved & absent cleared if existed')),
     );
-    setState(() {}); // اجبر إعادة بناء فورية
+    setState(() {});
   }
 }
 
