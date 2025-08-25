@@ -8,6 +8,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 // Screens
 import 'screens/dashboard_screen.dart';
 import 'screens/attendance_report_screen.dart';
+import 'admin/fix_missing_shift_for_statuses.dart';
+
 // كان: import 'screens/users_screen.dart';
 import 'screens/admin_users_screen.dart';           // ✅ النسخة الإدارية الجديدة
 // كان: import 'screens/branches_screen.dart';
@@ -84,6 +86,8 @@ class App extends StatelessWidget {
             '/branches': (_) => const BranchesShiftsScreen(),             // ✅ بدل BranchesScreen
             '/admin': (_) => const AdminPanelScreen(),
             '/employee': (_) => const EmployeeHomeScreen(),
+            '/admin/fix-status-shift': (_) => const FixMissingShiftForStatusesScreen(),
+
           },
         );
       },
