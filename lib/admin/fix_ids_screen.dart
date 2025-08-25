@@ -1,209 +1,215 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
-/// شاشة أدمِن: تصحيح الـ IDs في مجموعة attendance
-/// - تعتمد على: وجود مجموعتي shifts و branches فيهما name (لعمل lookup)
-/// - تعمل على دفعات Batch (<= 400) وت paginate لتفادي حدود فايرستور
-/// - فيها وضع "تحليل فقط" (Dry-run) يعرض أمثلة قبل التنفيذ
-
 class FixIdsScreen extends StatefulWidget {
   const FixIdsScreen({super.key});
-
   @override
   State<FixIdsScreen> createState() => _FixIdsScreenState();
 }
 
 class _FixIdsScreenState extends State<FixIdsScreen> {
-  // نطاق التاريخ (localDay)
+  // نطاق التاريخ
   DateTime _from = DateTime(DateTime.now().year, 1, 1);
   DateTime _to   = DateTime.now();
 
   // خيارات
-  bool _onlyWhenShiftIdNotDocId  = true;  // صحح فقط لو shiftId مش doc.id
-  bool _onlyWhenBranchIdNotDocId = true;  // صحح فقط لو branchId مش doc.id
-  bool _dryRun = true;                    // تحليل فقط ولا كتابة؟
+  bool _dryRun = true;                 // تحليل فقط
+  bool _onlyNonDocId = true;           // صحّح فقط لو القيمة مش doc.id
+  bool _includePunches = true;         // يشمل IN/OUT
+  bool _includeStatuses = true;        // يشمل absent/off/sick/leave
 
   // حالة التنفيذ
   bool _running = false;
-  int _scanned = 0;
-  int _wouldChange = 0;
-  int _updated = 0;
-  int _skipped = 0;
-  int _errors  = 0;
-
-  final List<String> _samples = []; // أمثلة للتغييرات
+  int _scanned = 0, _would = 0, _updated = 0, _skipped = 0, _errors = 0;
+  final _samples = <String>[];
   String _log = '';
 
-  String _ymd(DateTime d) =>
-      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+  String _ymd(DateTime d) => '${d.year}-${d.month.toString().padLeft(2,'0')}-${d.day.toString().padLeft(2,'0')}';
+  bool _looksId(String s) => s.trim().length >= 16; // heuristic كفاية
 
-  Future<void> _pickFrom() async {
-    final d = await showDatePicker(
-      context: context,
-      initialDate: _from,
-      firstDate: DateTime(2023, 1, 1),
-      lastDate: DateTime(2100),
-    );
-    if (d != null) setState(() => _from = DateTime(d.year, d.month, d.day));
+  Future<void> _pick(DateTime init, bool from) async {
+    final d = await showDatePicker(context: context, initialDate: init, firstDate: DateTime(2023,1,1), lastDate: DateTime(2100));
+    if (d != null) setState(() => from ? _from = DateTime(d.year,d.month,d.day) : _to = DateTime(d.year,d.month,d.day));
   }
 
-  Future<void> _pickTo() async {
-    final d = await showDatePicker(
-      context: context,
-      initialDate: _to,
-      firstDate: DateTime(2023, 1, 1),
-      lastDate: DateTime(2100),
-    );
-    if (d != null) setState(() => _to = DateTime(d.year, d.month, d.day));
-  }
-
-  bool _looksLikeDocId(String s) => s.trim().length >= 16; // heuristic كفاية لتمييز ids
-
-  Future<void> _runFix({required bool commit}) async {
+  Future<void> _run() async {
     if (_running) return;
     setState(() {
       _running = true;
-      _dryRun = !commit;
-      _scanned = _wouldChange = _updated = _skipped = _errors = 0;
-      _samples.clear();
-      _log = '';
+      _scanned = _would = _updated = _skipped = _errors = 0;
+      _samples.clear(); _log = '';
     });
 
     try {
-      // 1) ابني خرائط الاسم -> id من shifts/branches
+      // 1) خرائط الماستر
       final shifts = await FirebaseFirestore.instance.collection('shifts').get();
       final branches = await FirebaseFirestore.instance.collection('branches').get();
+      final users = await FirebaseFirestore.instance.collection('users').get();
 
-      final Map<String, String> shiftIdByName = {
-        for (final d in shifts.docs)
-          ((d.data()['name'] ?? '').toString().trim().toLowerCase()): d.id
+      final shiftNameToId = {
+        for (final d in shifts.docs) (d.data()['name'] ?? '').toString().trim().toLowerCase(): d.id
       };
-      final Map<String, String> branchIdByName = {
-        for (final d in branches.docs)
-          ((d.data()['name'] ?? '').toString().trim().toLowerCase()): d.id
+      final shiftIdToName = {
+        for (final d in shifts.docs) d.id : (d.data()['name'] ?? '').toString()
+      };
+      final branchNameToId = {
+        for (final d in branches.docs) (d.data()['name'] ?? '').toString().trim().toLowerCase(): d.id
+      };
+      final branchIdToName = {
+        for (final d in branches.docs) d.id : (d.data()['name'] ?? '').toString()
       };
 
-      // 2) امشِ على attendance بالصفحات
+      final userShiftId = <String,String>{};
+      final userShiftName = <String,String>{};
+      final userBranchId = <String,String>{};
+      final userBranchName = <String,String>{};
+      for (final u in users.docs) {
+        final m = u.data();
+        final sid = (m['assignedShiftId'] ?? m['shiftId'] ?? '').toString();
+        final sname = (m['shiftName'] ?? '').toString();
+        final bid = (m['primaryBranchId'] ?? m['branchId'] ?? '').toString();
+        final bname = (m['branchName'] ?? '').toString();
+        if (sid.isNotEmpty) userShiftId[u.id] = sid;
+        if (sname.isNotEmpty) userShiftName[u.id] = sname;
+        if (bid.isNotEmpty) userBranchId[u.id] = bid;
+        if (bname.isNotEmpty) userBranchName[u.id] = bname;
+      }
+
+      // 2) استعلام attendance
+      final from = _ymd(_from), to = _ymd(_to);
       final col = FirebaseFirestore.instance.collection('attendance');
-      final String fromStr = _ymd(_from);
-      final String toStr   = _ymd(_to);
-
       Query<Map<String, dynamic>> q = col
-          .where('localDay', isGreaterThanOrEqualTo: fromStr)
-          .where('localDay', isLessThanOrEqualTo: toStr)
-          .orderBy('localDay'); // مفروض يعمل بدون index مركّب
+        .where('localDay', isGreaterThanOrEqualTo: from)
+        .where('localDay', isLessThanOrEqualTo: to)
+        .orderBy('localDay');
 
-      DocumentSnapshot<Map<String, dynamic>>? cursor;
-      int pages = 0;
-
+      DocumentSnapshot<Map<String,dynamic>>? cursor;
       while (true) {
-        var pageQ = q.limit(400);
-        if (cursor != null) pageQ = pageQ.startAfterDocument(cursor);
-
-        final snap = await pageQ.get();
+        var page = q.limit(400);
+        if (cursor != null) page = page.startAfterDocument(cursor);
+        final snap = await page.get();
         if (snap.docs.isEmpty) break;
-        pages++;
         cursor = snap.docs.last;
 
-        // Batch لكل صفحة
-        WriteBatch? batch = commit ? FirebaseFirestore.instance.batch() : null;
-        int opsInBatch = 0;
+        WriteBatch? batch = _dryRun ? null : FirebaseFirestore.instance.batch();
+        int ops = 0;
 
         for (final d in snap.docs) {
-          _scanned++;
+          final m = d.data(); _scanned++;
 
-          final m = d.data();
+          final type = (m['type'] ?? '').toString().toLowerCase();
+          final isPunch = type == 'in' || type == 'out';
+          final isStatus = type == 'absent' || type == 'off' || type == 'sick' || type == 'leave';
+
+          if ((isPunch && !_includePunches) || (isStatus && !_includeStatuses)) { _skipped++; continue; }
+
+          final uid = (m['userId'] ?? m['userID'] ?? '').toString();
+
           String sid  = (m['shiftId'] ?? '').toString();
           String sname= (m['shiftName'] ?? '').toString();
           String bid  = (m['branchId'] ?? '').toString();
           String bname= (m['branchName'] ?? '').toString();
 
-          final bool sidLooksId = _looksLikeDocId(sid);
-          final bool bidLooksId = _looksLikeDocId(bid);
+          // قرارات الإصلاح
+          String? newSid, newSname, newBid, newBname;
 
-          String? newSid;
-          String? newBid;
-
-          // قرر هل محتاج تصحيح للـ shiftId
-          final needFixSid = _onlyWhenShiftIdNotDocId ? !sidLooksId : (!sidLooksId || !shiftIdByName.values.contains(sid));
+          // shiftId
+          final sidLooksId = _looksId(sid);
+          final needFixSid = _onlyNonDocId ? !sidLooksId : (!sidLooksId || !shiftIdToName.containsKey(sid));
           if (needFixSid) {
-            final key = sname.trim().toLowerCase();
-            if (key.isNotEmpty && shiftIdByName.containsKey(key)) {
-              newSid = shiftIdByName[key];
+            // 1) من اسم الشفت في السجل
+            if (sname.isNotEmpty) {
+              final key = sname.trim().toLowerCase();
+              if (shiftNameToId.containsKey(key)) {
+                newSid = shiftNameToId[key];
+                newSname = shiftIdToName[newSid] ?? sname;
+              }
             }
+            // 2) من بيانات المستخدم
+            newSid ??= userShiftId[uid];
+            if (newSid != null && (newSname == null || newSname.isEmpty)) {
+              newSname = shiftIdToName[newSid] ?? userShiftName[uid] ?? sname;
+            }
+          } else if (sname.isEmpty) {
+            // عندنا id صحيح لكن الاسم فاضي
+            newSid = sid;
+            newSname = shiftIdToName[sid] ?? sname;
           }
 
-          // قرر هل محتاج تصحيح للـ branchId
-          final needFixBid = _onlyWhenBranchIdNotDocId ? !bidLooksId : (!bidLooksId || !branchIdByName.values.contains(bid));
+          // branchId
+          final bidLooksId = _looksId(bid);
+          final needFixBid = _onlyNonDocId ? !bidLooksId : (!bidLooksId || !branchIdToName.containsKey(bid));
           if (needFixBid) {
-            final key = bname.trim().toLowerCase();
-            if (key.isNotEmpty && branchIdByName.containsKey(key)) {
-              newBid = branchIdByName[key];
+            if (bname.isNotEmpty) {
+              final key = bname.trim().toLowerCase();
+              if (branchNameToId.containsKey(key)) {
+                newBid = branchNameToId[key];
+                newBname = branchIdToName[newBid] ?? bname;
+              }
             }
+            newBid ??= userBranchId[uid];
+            if (newBid != null && (newBname == null || newBname.isEmpty)) {
+              newBname = branchIdToName[newBid] ?? userBranchName[uid] ?? bname;
+            }
+          } else if (bname.isEmpty) {
+            newBid = bid;
+            newBname = branchIdToName[bid] ?? bname;
           }
 
-          if (newSid == null && newBid == null) {
-            _skipped++;
-            continue;
+          if (newSid == null && newSname == null && newBid == null && newBname == null) {
+            _skipped++; continue;
           }
 
-          _wouldChange++;
-
+          _would++;
           if (_samples.length < 80) {
-            _samples.add(
-              '${m['localDay'] ?? ''} • ${m['userId'] ?? ''}  '
-              'shiftId: ${sid.isEmpty ? '∅' : sid} -> ${newSid ?? sid}  |  '
-              'branchId: ${bid.isEmpty ? '∅' : bid} -> ${newBid ?? bid}');
+            _samples.add('${m['localDay'] ?? ''} • $uid • $type'
+              ' | shiftId: ${sid.isEmpty ? '∅' : sid} -> ${newSid ?? sid}'
+              ' | branchId: ${bid.isEmpty ? '∅' : bid} -> ${newBid ?? bid}');
           }
 
-          if (commit) {
-            final data = <String, dynamic>{};
-            if (newSid != null) data['shiftId'] = newSid;
-            if (newBid != null) data['branchId'] = newBid;
+          if (!_dryRun) {
+            final data = <String,dynamic>{};
+            if (newSid != null)   data['shiftId'] = newSid;
+            if (newSname != null) data['shiftName'] = newSname;
+            if (newBid != null)   data['branchId'] = newBid;
+            if (newBname != null) data['branchName'] = newBname;
             data['updatedAt'] = FieldValue.serverTimestamp();
 
             batch!.set(d.reference, data, SetOptions(merge: true));
-            opsInBatch++;
-
-            // حرّك batch لو قرب من الحد
-            if (opsInBatch >= 400) {
-              await batch.commit();
-              _updated += opsInBatch;
-              opsInBatch = 0;
+            ops++;
+            if (ops >= 400) {
+              await batch.commit(); _updated += ops; ops = 0;
               batch = FirebaseFirestore.instance.batch();
             }
           }
         }
 
-        // commit المتبقي في الصفحة
-        if (commit && opsInBatch > 0 && batch != null) {
-          await batch.commit();
-          _updated += opsInBatch;
+        if (!_dryRun && cursor != null) {
+          await batch!.commit();
+          _updated += ops;
         }
 
-        setState(() {}); // تحديث العدادات في الـ UI
+        setState(() {}); // تحديث العدادات
       }
 
-      _log = 'Done. pages=$pages, scanned=$_scanned, wouldChange=$_wouldChange, '
-             'updated=$_updated, skipped=$_skipped';
+      setState(()=> _log = 'Done. scanned=$_scanned, would=$_would, updated=$_updated, skipped=$_skipped, errors=$_errors');
     } catch (e, st) {
       _errors++;
-      _log = 'ERROR: $e\n$st';
+      setState(()=> _log = 'ERROR: $e\n$st');
     } finally {
-      setState(() => _running = false);
+      setState(()=> _running = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final btnText = _dryRun ? 'تحليل (بدون تعديل)' : 'تشغيل التصحيح الآن';
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Admin • Fix Attendance IDs'),
+        title: const Text('Admin • Fix Legacy IDs'),
         actions: [
           IconButton(
-            tooltip: _dryRun ? 'سيدو تنفيذ (Dry-run)' : 'وضع تنفيذ فعلي',
-            onPressed: _running ? null : () => setState(() => _dryRun = !_dryRun),
+            tooltip: _dryRun ? 'وضع تنفيذ فعلي' : 'تحليل فقط',
+            onPressed: _running ? null : () => setState(()=> _dryRun = !_dryRun),
             icon: Icon(_dryRun ? Icons.visibility : Icons.build),
           ),
         ],
@@ -213,79 +219,48 @@ class _FixIdsScreenState extends State<FixIdsScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Wrap(
-              spacing: 8, runSpacing: 8,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                OutlinedButton.icon(
-                  onPressed: _running ? null : _pickFrom,
-                  icon: const Icon(Icons.date_range),
-                  label: Text('From: ${_ymd(_from)}'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: _running ? null : _pickTo,
-                  icon: const Icon(Icons.event),
-                  label: Text('To: ${_ymd(_to)}'),
-                ),
-                FilterChip(
-                  label: const Text('صحح shiftId فقط لو مش doc.id'),
-                  selected: _onlyWhenShiftIdNotDocId,
-                  onSelected: _running ? null : (v) => setState(() => _onlyWhenShiftIdNotDocId = v),
-                ),
-                FilterChip(
-                  label: const Text('صحح branchId فقط لو مش doc.id'),
-                  selected: _onlyWhenBranchIdNotDocId,
-                  onSelected: _running ? null : (v) => setState(() => _onlyWhenBranchIdNotDocId = v),
-                ),
-                FilledButton.icon(
-                  onPressed: _running ? null : () async {
-                    if (_dryRun) {
-                      await _runFix(commit: false);
-                    } else {
-                      final ok = await showDialog<bool>(
-                        context: context,
-                        builder: (ctx) => AlertDialog(
-                          title: const Text('تأكيد'),
-                          content: const Text('سيتم تعديل السجلات في Firestore. متأكد؟'),
-                          actions: [
-                            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('إلغاء')),
-                            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('نعم، نفّذ')),
-                          ],
-                        ),
-                      );
-                      if (ok == true) await _runFix(commit: true);
-                    }
-                  },
-                  icon: _running ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.play_arrow),
-                  label: Text(btnText),
-                ),
-              ],
-            ),
+            Wrap(spacing: 8, runSpacing: 8, children: [
+              OutlinedButton.icon(onPressed: _running?null:()=>_pick(_from,true), icon: const Icon(Icons.date_range), label: Text('From: ${_ymd(_from)}')),
+              OutlinedButton.icon(onPressed: _running?null:()=>_pick(_to,false),  icon: const Icon(Icons.event),      label: Text('To:   ${_ymd(_to)}')),
+              FilterChip(
+                label: const Text('فقط القيم غير doc.id'),
+                selected: _onlyNonDocId,
+                onSelected: _running ? null : (v)=>setState(()=>_onlyNonDocId = v),
+              ),
+              FilterChip(
+                label: const Text('IN/OUT'),
+                selected: _includePunches,
+                onSelected: _running ? null : (v)=>setState(()=>_includePunches = v),
+              ),
+              FilterChip(
+                label: const Text('absent/off/sick/leave'),
+                selected: _includeStatuses,
+                onSelected: _running ? null : (v)=>setState(()=>_includeStatuses = v),
+              ),
+              FilledButton.icon(
+                onPressed: _running ? null : _run,
+                icon: _running ? const SizedBox(width:16,height:16,child:CircularProgressIndicator(strokeWidth:2)) : const Icon(Icons.play_arrow),
+                label: Text(_dryRun ? 'تحليل (بدون تعديل)' : 'تشغيل التصحيح الآن'),
+              ),
+            ]),
             const SizedBox(height: 8),
-            Wrap(spacing: 12, children: [
-              _Stat('Scanned', _scanned),
-              _Stat(_dryRun ? 'Would change' : 'Updated', _dryRun ? _wouldChange : _updated),
-              _Stat('Skipped', _skipped),
-              _Stat('Errors', _errors),
+            Wrap(spacing: 8, children: [
+              Chip(label: Text('Scanned: $_scanned')),
+              Chip(label: Text(_dryRun ? 'Would change: $_would' : 'Updated: $_updated')),
+              Chip(label: Text('Skipped: $_skipped')),
+              Chip(label: Text('Errors: $_errors')),
             ]),
             const Divider(),
-            const Text('Examples / Preview (أول 80 تغيير):'),
+            const Text('أمثلة (أول 80):'),
             const SizedBox(height: 6),
             Expanded(
               child: Container(
-                decoration: BoxDecoration(
-                  border: Border.all(color: Theme.of(context).dividerColor),
-                  borderRadius: BorderRadius.circular(8),
-                ),
+                decoration: BoxDecoration(border: Border.all(color: Theme.of(context).dividerColor), borderRadius: BorderRadius.circular(8)),
                 child: _samples.isEmpty
-                    ? const Center(child: Text('لا توجد أمثلة بعد. اضغط "تحليل" أولاً.'))
+                    ? const Center(child: Text('اضغط تشغيل لعرض أمثلة'))
                     : ListView.builder(
                         itemCount: _samples.length,
-                        itemBuilder: (_, i) => ListTile(
-                          dense: true,
-                          leading: Text('${i + 1}.'),
-                          title: Text(_samples[i]),
-                        ),
+                        itemBuilder: (_, i) => ListTile(dense: true, leading: Text('${i+1}.'), title: Text(_samples[i])),
                       ),
               ),
             ),
@@ -294,20 +269,6 @@ class _FixIdsScreenState extends State<FixIdsScreen> {
           ],
         ),
       ),
-    );
-  }
-}
-
-class _Stat extends StatelessWidget {
-  final String title;
-  final int value;
-  const _Stat(this.title, this.value);
-
-  @override
-  Widget build(BuildContext context) {
-    return Chip(
-      label: Text('$title: $value'),
-      padding: const EdgeInsets.symmetric(horizontal: 8),
     );
   }
 }
