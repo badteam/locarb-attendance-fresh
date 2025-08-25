@@ -1,12 +1,12 @@
 // lib/screens/attendance_report_screen.dart
 import 'dart:typed_data';
 import 'dart:html' as html;
+import 'dart:convert'; // للتصدير CSV
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
-import '../utils/export.dart';
 import '../widgets/main_drawer.dart';
 
 class AttendanceReportScreen extends StatefulWidget {
@@ -39,9 +39,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   String? _branchId;
   String? _shiftId;
   late bool _onlyEx;
-
-  // NEW: عرض خام للتشخيص
-  bool _rawMode = false;
 
   // caches
   final Map<String, Map<String, dynamic>> _usersCache = {};
@@ -154,7 +151,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     }
   }
 
-  // ======== تعليم اليوم Off/Sick/Leave + تجاهل الحسابات ========
+  // ======== تعليم اليوم Off/Sick/Leave ========
   Future<void> _setDayStatus({
     required String uid,
     required String localDay,
@@ -200,7 +197,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     }
   }
 
-  // ======== Reset Auto: امسح حالات اليوم (off/sick/leave/absent) واترك IN/OUT ========
+  // ======== Reset Auto: امسح حالات اليوم واترك IN/OUT ========
   Future<void> _resetDayAuto(String uid, String localDay) async {
     final col = FirebaseFirestore.instance.collection('attendance');
     final ids = [
@@ -230,66 +227,57 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     }
   }
 
-  // ======== Export Excel ========
-  Future<void> _exportExcel() async {
-    try {
-      Query<Map<String, dynamic>> q = FirebaseFirestore.instance
-          .collection('attendance')
-          .where('localDay', isGreaterThanOrEqualTo: _fmtDay(_from))
-          .where('localDay', isLessThanOrEqualTo: _fmtDay(_to))
-          .orderBy('localDay', descending: false);
+  // ======== تصدير CSV من الملخصات ========
+  Future<void> _exportCsvFromRows(List<_DaySummary> rows) async {
+    final headers = [
+      'Date','User','Branch','Shift','Status','IN','OUT',
+      'Worked(HH:MM)','Scheduled(HH:MM)','OT(HH:MM)'
+    ];
+    final sb = StringBuffer();
+    sb.writeln(headers.join(','));
 
-      final snap = await q.get();
-      var docs = snap.docs;
+    for (final r in rows) {
+      final status = r.isOff ? 'Off'
+        : r.isSick ? 'Sick'
+        : r.isLeave ? 'Leave'
+        : (r.hasIn && r.hasOut) ? 'Present'
+        : (r.hasIn && !r.hasOut) ? 'Missing OUT'
+        : (!r.hasIn && r.hasOut) ? 'Missing IN'
+        : r.isAbsent ? 'Absent' : 'Absent';
 
-      if (widget.userId?.isNotEmpty == true) {
-        docs = docs.where((d) => (d.data()['userId'] ?? '') == widget.userId).toList();
-      }
-      if (_branchId?.isNotEmpty == true) {
-        docs = docs.where((d) => (d.data()['branchId'] ?? '') == _branchId).toList();
-      }
-      if (_shiftId?.isNotEmpty == true) {
-        docs = docs.where((d) => (d.data()['shiftId'] ?? '') == _shiftId).toList();
-      }
-      if (docs.isEmpty) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No records to export for this range')));
-        return;
-      }
+      final worked = _fmtHM(r.workedMinutes);
+      final scheduled = _fmtHM(r.scheduledMinutes);
+      final ot = _fmtHM(r.overtimeMinutes);
 
-      final uidSet = <String>{};
-      for (final d in docs) {
-        final uid = (d.data()['userId'] ?? '').toString();
-        if (uid.isNotEmpty) uidSet.add(uid);
-      }
-      final names = Map<String, String>.from(_userNames);
-      for (final uid in uidSet) {
-        names.putIfAbsent(uid, () => uid);
-      }
+      final row = [
+        _fmtDay(r.date),
+        r.userName.replaceAll(',', ' '),
+        (r.branchName.isNotEmpty ? r.branchName : (_branchNames[r.branchId] ?? 'No branch')).replaceAll(',', ' '),
+        (r.shiftName.isNotEmpty ? r.shiftName : (_shiftNames[r.shiftId] ?? 'No shift')).replaceAll(',', ' '),
+        status,
+        _fmtTime(r.inAt),
+        _fmtTime(r.outAt),
+        worked,
+        scheduled,
+        ot,
+      ];
+      sb.writeln(row.join(','));
+    }
 
-      final bytes = await Export.buildPivotExcelBytes(
-        attendanceDocs: docs,
-        from: _from,
-        to: _to,
-        userNames: names,
-      );
-      final filename = 'attendance_${_fmtDay(_from)}_${_fmtDay(_to)}.xlsx';
+    final bytes = utf8.encode(sb.toString());
+    final filename = 'attendance_${_fmtDay(_from)}_${_fmtDay(_to)}.csv';
 
-      if (kIsWeb) {
-        final blob = html.Blob([Uint8List.fromList(bytes)]);
-        final url = html.Url.createObjectUrlFromBlob(blob);
-        final a = html.AnchorElement(href: url)..download = filename;
-        html.document.body!.children.add(a);
-        a.click();
-        html.document.body!.children.remove(a);
-        html.Url.revokeObjectUrl(url);
-      } else {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Excel generated.')));
-      }
-    } catch (e) {
+    if (kIsWeb) {
+      final blob = html.Blob([Uint8List.fromList(bytes)], 'text/csv');
+      final url = html.Url.createObjectUrlFromBlob(blob);
+      final a = html.AnchorElement(href: url)..download = filename;
+      html.document.body!.children.add(a);
+      a.click();
+      html.document.body!.children.remove(a);
+      html.Url.revokeObjectUrl(url);
+    } else {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Export failed: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('CSV generated.')));
     }
   }
 
@@ -309,15 +297,21 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
       appBar: AppBar(
         title: Text(widget.userName ?? 'Attendance Reports'),
         actions: [
-          // NEW: زر RAW
           IconButton(
-            tooltip: _rawMode ? 'Show grouped' : 'Show RAW',
-            onPressed: () => setState(() => _rawMode = !_rawMode),
-            icon: Icon(_rawMode ? Icons.view_agenda : Icons.bug_report),
-          ),
-          IconButton(
-            tooltip: 'Export Excel',
-            onPressed: _exportExcel,
+            tooltip: 'Export CSV',
+            onPressed: () async {
+              // هنكوّن نفس rows المستخدمة في العرض ثم نصدّر
+              final snap = await q.get();
+              final computedRows = _computeRows(snap.docs);
+              if (computedRows.isEmpty) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('No records to export for this range')),
+                );
+                return;
+              }
+              await _exportCsvFromRows(computedRows);
+            },
             icon: const Icon(Icons.file_download),
           ),
         ],
@@ -358,183 +352,22 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
               child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                 stream: q.snapshots(),
                 builder: (context, snap) {
-                  if (snap.hasError) {
-                    return _ErrorBox(error: snap.error.toString());
-                  }
+                  if (snap.hasError) return _ErrorBox(error: snap.error.toString());
                   if (snap.connectionState == ConnectionState.waiting) {
                     return const Center(child: CircularProgressIndicator());
                   }
 
-                  final allDocs = snap.data?.docs ?? [];
-                  int afterBranchShift = 0;
-
-                  // RAW MODE: اعرض المستندات كما هي
-                  if (_rawMode) {
-                    final raw = allDocs.where((d) {
-                      final m = d.data();
-                      if (widget.userId?.isNotEmpty == true && m['userId'] != widget.userId) return false;
-                      if (_branchId?.isNotEmpty == true && (m['branchId'] ?? '') != _branchId) return false;
-                      if (_shiftId?.isNotEmpty  == true && (m['shiftId']  ?? '') != _shiftId ) return false;
-                      return true;
-                    }).toList();
-                    afterBranchShift = raw.length;
-
-                    return Column(
-                      children: [
-                        Expanded(
-                          child: raw.isEmpty
-                              ? const Center(child: Text('RAW: no documents for current filters/date'))
-                              : ListView.builder(
-                                  itemCount: raw.length,
-                                  itemBuilder: (_, i) {
-                                    final m = raw[i].data();
-                                    return ListTile(
-                                      dense: true,
-                                      title: Text('${m['localDay'] ?? ''} • ${m['userId'] ?? ''} • ${m['type'] ?? ''}'),
-                                      subtitle: Text(
-                                        'branchId=${m['branchId']} (${m['branchName']}) | '
-                                        'shiftId=${m['shiftId']} (${m['shiftName']})',
-                                      ),
-                                    );
-                                  },
-                                ),
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 6),
-                          child: Text('debug all=${allDocs.length}, afterBranchShift=$afterBranchShift'),
-                        ),
-                      ],
-                    );
-                  }
-
-                  // فلترة user/branch/shift (اسمية وبسيطة)
-                  final filtered = allDocs.where((d) {
-                    final m = d.data();
-                    if (widget.userId?.isNotEmpty == true && m['userId'] != widget.userId) return false;
-
-                    // Branch filter: لو مختار فرع لازم يساوي الـ doc.id
-                    if (_branchId?.isNotEmpty == true) {
-                      final bid = (m['branchId'] ?? '').toString();
-                      if (bid != _branchId) return false;
-                    }
-
-                    // Shift filter: لو مختار شيفت لازم يساوي الـ doc.id
-                    // (سجلات قديمة بدون shiftId هتتفلتر لما يكون في اختيار محدد)
-                    if (_shiftId?.isNotEmpty == true) {
-                      final sid = (m['shiftId'] ?? '').toString();
-                      if (sid != _shiftId) return false;
-                    }
-
-                    return true;
-                  }).toList();
-                  afterBranchShift = filtered.length;
-
-                  // ====== تجميع حسب (userId + localDay) ======
-                  final Map<String, _DaySummary> byUserDay = {};
-                  // نجمع الـ IN/OUT المتعددة
-                  final Map<String, List<DateTime>> inTimes = {};
-                  final Map<String, List<DateTime>> outTimes = {};
-
-                  for (final d in filtered) {
-                    final m = d.data();
-                    final uid = (m['userId'] ?? '').toString();
-                    final day = (m['localDay'] ?? '').toString();
-                    if (uid.isEmpty || day.isEmpty) continue;
-
-                    final key = '$uid|$day';
-                    byUserDay.putIfAbsent(key, () {
-                      final u    = _usersCache[uid] ?? {};
-                      final bId  = (m['branchId'] ?? u['primaryBranchId'] ?? u['branchId'] ?? '').toString();
-
-                      // Fallback للشيفت: من المستند -> من user -> فارغ
-                      final sId  = (m['shiftId']  ?? u['assignedShiftId'] ?? u['shiftId']  ?? '').toString();
-
-                      final bNm  = (m['branchName'] ?? u['branchName'] ?? _branchNames[bId] ?? '').toString();
-                      final sNm  = (m['shiftName']  ?? u['shiftName']  ?? _shiftNames[sId]  ?? 'No shift').toString();
-
-                      return _DaySummary(
-                        uid: uid,
-                        userName: _userNames[uid] ?? uid,
-                        localDay: day,
-                        date: _parseDay(day),
-                        branchId: bId,
-                        branchName: bNm,
-                        shiftId: sId,
-                        shiftName: sNm,
-                      );
-                    });
-
-                    final typ = (m['type'] ?? '').toString();
-                    final at  = m['at'] is Timestamp ? (m['at'] as Timestamp).toDate() : null;
-
-                    if (typ == 'in' && at != null) {
-                      inTimes.putIfAbsent(key, () => []).add(at);
-                      byUserDay[key]!.hasIn = true;
-                    } else if (typ == 'out' && at != null) {
-                      outTimes.putIfAbsent(key, () => []).add(at);
-                      byUserDay[key]!.hasOut = true;
-                    } else if (typ == 'absent') {
-                      byUserDay[key]!.isAbsent = true;
-                    } else if (typ == 'off') {
-                      byUserDay[key]!.isOff = true;
-                    } else if (typ == 'sick') {
-                      byUserDay[key]!.isSick = true;
-                    } else if (typ == 'leave') {
-                      byUserDay[key]!.isLeave = true;
-                    }
-                  }
-
-                  // حساب بسيط للـ IN/OUT وعرض الشيفت الافتراضي
-                  for (final entry in byUserDay.entries) {
-                    final key = entry.key;
-                    final r = entry.value;
-
-                    final ins = (inTimes[key] ?? [])..sort();
-                    final outs = (outTimes[key] ?? [])..sort();
-                    r.inAt  = ins.isNotEmpty  ? ins.first  : null;
-                    r.outAt = outs.isNotEmpty ? outs.last  : null;
-
-                    if (r.hasIn || r.hasOut) r.isAbsent = false;
-                  }
-
-                  var rows = byUserDay.values.toList()
-                    ..sort((a, b) => b.date.compareTo(a.date));
-
-                  if (_onlyEx) {
-                    rows = rows.where((r) =>
-                      r.isAbsent || (r.hasIn && !r.hasOut) || (!r.hasIn && r.hasOut)
-                    ).toList();
-                  }
+                  final rows = _computeRows(snap.data?.docs ?? []);
 
                   if (rows.isEmpty) {
-                    return Column(
-                      children: [
-                        const Expanded(
-                          child: Center(child: Text('No records in the selected range')),
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 6),
-                          child: Text('debug all=${allDocs.length}, afterBranchShift=$afterBranchShift, rows=${rows.length}'),
-                        ),
-                      ],
-                    );
+                    return const Center(child: Text('No records in the selected range'));
                   }
 
-                  return Column(
-                    children: [
-                      Expanded(
-                        child: ListView.separated(
-                          padding: const EdgeInsets.fromLTRB(12, 12, 12, 28),
-                          itemCount: rows.length,
-                          separatorBuilder: (_, __) => const SizedBox(height: 8),
-                          itemBuilder: (_, i) => _rowTile(rows[i]),
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 6),
-                        child: Text('debug all=${allDocs.length}, afterBranchShift=$afterBranchShift, rows=${rows.length}'),
-                      ),
-                    ],
+                  return ListView.separated(
+                    padding: const EdgeInsets.fromLTRB(12, 12, 12, 28),
+                    itemCount: rows.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 8),
+                    itemBuilder: (_, i) => _rowTile(rows[i]),
                   );
                 },
               ),
@@ -543,6 +376,143 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
         ),
       ),
     );
+  }
+
+  // ======== حساب الملخصات (with OT) ========
+  List<_DaySummary> _computeRows(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
+    // فلترة بالفرع/الشيفت + المستخدم
+    final filtered = docs.where((d) {
+      final m = d.data();
+      if (widget.userId?.isNotEmpty == true && m['userId'] != widget.userId) return false;
+      if (_branchId?.isNotEmpty == true && (m['branchId'] ?? '') != _branchId) return false;
+      if (_shiftId?.isNotEmpty == true && (m['shiftId'] ?? '') != _shiftId) return false;
+      return true;
+    }).toList();
+
+    // تجميع حسب (userId + localDay)
+    final Map<String, _DaySummary> byUserDay = {};
+    final Map<String, List<DateTime>> inTimes = {};
+    final Map<String, List<DateTime>> outTimes = {};
+
+    for (final d in filtered) {
+      final m = d.data();
+      final uid = (m['userId'] ?? '').toString();
+      final day = (m['localDay'] ?? '').toString();
+      if (uid.isEmpty || day.isEmpty) continue;
+
+      final key = '$uid|$day';
+      byUserDay.putIfAbsent(key, () {
+        final u    = _usersCache[uid] ?? {};
+        final bId  = (m['branchId'] ?? u['primaryBranchId'] ?? u['branchId'] ?? '').toString();
+        final sId  = (m['shiftId']  ?? u['assignedShiftId'] ?? u['shiftId']  ?? '').toString();
+        final bNm  = (m['branchName'] ?? u['branchName'] ?? _branchNames[bId] ?? '').toString();
+        final sNm  = (m['shiftName']  ?? u['shiftName']  ?? _shiftNames[sId]  ?? '').toString();
+
+        // سياسة العمل لكل موظف
+        final wp = (u['workPolicy'] ?? {}) as Map<String, dynamic>;
+        final workHours = (wp['workHoursPerDay'] is num)
+            ? (wp['workHoursPerDay'] as num).toDouble()
+            : 9.0;
+        final weekendDays = (wp['weekendDays'] is List)
+            ? (wp['weekendDays'] as List).map((e) => int.tryParse(e.toString()) ?? -1).where((e) => e >= 0).toList()
+            : <int>[5, 6]; // افتراضي
+        final holidays = (wp['holidays'] is List)
+            ? (wp['holidays'] as List).map((e) => e.toString()).toSet()
+            : <String>{};
+
+        return _DaySummary(
+          uid: uid,
+          userName: _userNames[uid] ?? uid,
+          localDay: day,
+          date: _parseDay(day),
+          branchId: bId,
+          branchName: bNm,
+          shiftId: sId,
+          shiftName: sNm,
+          workHoursPerDay: workHours,
+          weekendDays: weekendDays,
+          holidays: holidays,
+        );
+      });
+
+      final typ = (m['type'] ?? '').toString();
+      final at  = m['at'] is Timestamp ? (m['at'] as Timestamp).toDate() : null;
+
+      if (typ == 'in' && at != null) {
+        inTimes.putIfAbsent(key, () => []).add(at);
+      } else if (typ == 'out' && at != null) {
+        outTimes.putIfAbsent(key, () => []).add(at);
+      } else if (typ == 'absent') {
+        byUserDay[key]!.isAbsent = true;
+      } else if (typ == 'off') {
+        byUserDay[key]!.isOff = true;
+      } else if (typ == 'sick') {
+        byUserDay[key]!.isSick = true;
+      } else if (typ == 'leave') {
+        byUserDay[key]!.isLeave = true;
+      }
+    }
+
+    // حساب العمل/الأوفر تايم
+    for (final entry in byUserDay.entries) {
+      final key = entry.key;
+      final r = entry.value;
+
+      // لو اليوم معلّم Off/Sick/Leave → تجميد الحسابات
+      if (r.isOff || r.isSick || r.isLeave) {
+        r.hasIn = r.hasOut = false;
+        r.workedMinutes = 0;
+        r.overtimeMinutes = 0;
+        r.scheduledMinutes = 0;
+        continue;
+      }
+
+      final ins = (inTimes[key] ?? [])..sort();
+      final outs = (outTimes[key] ?? [])..sort();
+      r.hasIn = ins.isNotEmpty;
+      r.hasOut = outs.isNotEmpty;
+
+      // قرن الأزواج: أقرب OUT لكل IN بالترتيب
+      int i = 0, j = 0;
+      int worked = 0;
+      while (i < ins.length && j < outs.length) {
+        final inT = ins[i];
+        final outT = outs[j];
+        if (outT.isBefore(inT)) { j++; continue; } // OUT قبل IN → تجاهله
+        worked += outT.difference(inT).inMinutes;
+        i++; j++;
+      }
+      r.workedMinutes = worked;
+
+      final isWeekend = r.weekendDays.contains(r.date.weekday % 7); // نفس منطقك القديم
+      final isHoliday = r.holidays.contains(r.localDay);
+      final scheduled = (isWeekend || isHoliday)
+          ? 0
+          : (r.workHoursPerDay * 60).round();
+
+      r.scheduledMinutes = scheduled;
+      r.overtimeMinutes = (worked > scheduled) ? (worked - scheduled) : 0;
+
+      // IN/OUT أحادية → Missing
+      if (r.hasIn && !r.hasOut) r.missingOut = true;
+      if (!r.hasIn && r.hasOut) r.missingIn  = true;
+
+      // لو في أي IN/OUT نلغي غياب
+      if (r.hasIn || r.hasOut) r.isAbsent = false;
+
+      // أول قيم عرضية لـ IN/OUT
+      r.inAt  = ins.isNotEmpty  ? ins.first  : null;
+      r.outAt = outs.isNotEmpty ? outs.last  : null;
+    }
+
+    var rows = byUserDay.values.toList()
+      ..sort((a, b) => b.date.compareTo(a.date));
+    if (_onlyEx) {
+      rows = rows.where((r) =>
+        (r.isAbsent || r.missingIn || r.missingOut)
+      ).toList();
+    }
+    return rows;
   }
 
   Widget _filtersBar(
@@ -632,7 +602,23 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
           ),
           // Export
           FilledButton.icon(
-            onPressed: _exportExcel,
+            onPressed: () async {
+              final snap = await FirebaseFirestore.instance
+                  .collection('attendance')
+                  .where('localDay', isGreaterThanOrEqualTo: _fmtDay(_from))
+                  .where('localDay', isLessThanOrEqualTo: _fmtDay(_to))
+                  .orderBy('localDay', descending: true)
+                  .get();
+              final rows = _computeRows(snap.docs);
+              if (rows.isEmpty) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('No records to export for this range')),
+                );
+                return;
+              }
+              await _exportCsvFromRows(rows);
+            },
             icon: const Icon(Icons.file_download),
             label: const Text('Export Excel'),
           ),
@@ -662,6 +648,9 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
         ? r.shiftName
         : (_shiftNames[r.shiftId] ?? 'No shift');
 
+    final showOT = !(r.isOff || r.isSick || r.isLeave);
+    final otChip = showOT ? Chip(label: Text('OT ${_fmtHM(r.overtimeMinutes)}')) : const SizedBox.shrink();
+
     return Card(
       child: ListTile(
         title: Text('${_fmtDay(r.date)} • ${r.userName}'),
@@ -670,6 +659,9 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
             Chip(label: Text(status), backgroundColor: color, labelStyle: const TextStyle(color: Colors.white)),
             Chip(label: Text('IN ${_fmtTime(r.inAt)}')),
             Chip(label: Text('OUT ${_fmtTime(r.outAt)}')),
+            Chip(label: Text('Worked ${_fmtHM(r.workedMinutes)}')),
+            Chip(label: Text('Sched ${_fmtHM(r.scheduledMinutes)}')),
+            otChip,
             Chip(label: Text('Branch: $displayBranch')),
             Chip(label: Text('Shift: $displayShift')),
           ],
@@ -781,12 +773,23 @@ class _DaySummary {
   final String shiftId;
   final String shiftName;
 
+  // سياسة الموظف
+  final double workHoursPerDay;
+  final List<int> weekendDays; // 0..6 (أحد..سبت) مثل منطقك القديم
+  final Set<String> holidays;  // YYYY-MM-DD
+
   bool hasIn = false;
   bool hasOut = false;
+  bool missingIn = false;
+  bool missingOut = false;
   bool isAbsent = false;
   bool isOff = false;
   bool isSick = false;
   bool isLeave = false;
+
+  int workedMinutes = 0;
+  int scheduledMinutes = 0;
+  int overtimeMinutes = 0;
 
   DateTime? inAt;
   DateTime? outAt;
@@ -800,12 +803,15 @@ class _DaySummary {
     required this.branchName,
     required this.shiftId,
     required this.shiftName,
+    this.workHoursPerDay = 9.0,
+    this.weekendDays = const [5,6],
+    this.holidays = const {},
   });
 
   void setIn(DateTime? t) { hasIn = true; if (t != null) inAt = t; }
   void setOut(DateTime? t){ hasOut = true; if (t != null) outAt = t; }
 
-  bool get isException => isAbsent || (hasIn && !hasOut) || (!hasIn && hasOut);
+  bool get isException => isAbsent || missingIn || missingOut;
 }
 
 // ====== Loader ======
