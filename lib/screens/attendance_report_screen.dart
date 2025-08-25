@@ -151,50 +151,46 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   }
 
   // ======== Day status (Off/Sick/Leave) ========
-  Future<void> _setDayStatus({
-    required String uid,
-    required String localDay,
-    required String statusType, // "off" | "sick" | "leave"
-    required String userName,
-    required String branchId,
-    required String branchName,
-    required String shiftId,
-    required String shiftName,
-  }) async {
-    final col = FirebaseFirestore.instance.collection('attendance');
-    final statusId = '${uid}_${localDay}_$statusType';
-    final absentId = '${uid}_${localDay}_absent';
+ Future<void> _setDayStatus({
+  required String uid,
+  required String localDay,
+  required String statusType, // "off" | "sick" | "leave" | "absent"
+  required String userName,
+  required String branchId,   // DOC ID
+  required String branchName, // عرض فقط
+  required String shiftId,    // DOC ID (مهم!)
+  required String shiftName,  // عرض فقط
+}) async {
+  final col = FirebaseFirestore.instance.collection('attendance');
+  final statusId = '${uid}_${localDay}_$statusType';
+  final absentId = '${uid}_${localDay}_absent';
 
-    final batch = FirebaseFirestore.instance.batch();
-    batch.set(col.doc(statusId), {
-      'userId': uid,
-      'userName': userName,
-      'localDay': localDay,
-      'type': statusType,
-      'branchId': branchId,
-      'branchName': branchName,
-      'shiftId': shiftId,
-      'shiftName': shiftName,
-      'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+  final batch = FirebaseFirestore.instance.batch();
+  batch.set(col.doc(statusId), {
+    'userId': uid,
+    'userName': userName,
+    'localDay': localDay,
+    'type': statusType,
+    'branchId': branchId,     // مهم
+    'branchName': branchName,
+    'shiftId': shiftId,       // مهم
+    'shiftName': shiftName,
+    'updatedAt': FieldValue.serverTimestamp(),
+  }, SetOptions(merge: true));
+
+  // نظافة: لو كان فيه absent قديم لنفس اليوم امسحه
+  if (statusType != 'absent') {
     batch.delete(col.doc(absentId));
-
-    try {
-      await batch.commit();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Marked as ${statusType.toUpperCase()}')),
-        );
-        setState(() {});
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to mark day: $e')),
-        );
-      }
-    }
   }
+
+  await batch.commit();
+  if (mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Marked as ${statusType.toUpperCase()}')),
+    );
+    setState(() {});
+  }
+}
 
   Future<void> _resetDayAuto(String uid, String localDay) async {
     final col = FirebaseFirestore.instance.collection('attendance');
