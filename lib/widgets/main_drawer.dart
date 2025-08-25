@@ -7,6 +7,10 @@ import '../screens/attendance_report_screen.dart';
 import '../screens/admin_users_screen.dart';
 import '../screens/branches_shifts_screen.dart';
 
+// Admin tools (اتأكد إن الملفات دي موجودة)
+import '../admin/fix_missing_shift_for_statuses.dart';
+import '../admin/fix_ids_screen.dart';
+
 class MainDrawer extends StatefulWidget {
   /// مرّر كولباك لتبديل الثيم (اختياري). مثال: (isDark) => ThemeController.setDark(isDark)
   final void Function(bool isDark)? onToggleTheme;
@@ -103,6 +107,20 @@ class _MainDrawerState extends State<MainDrawer> {
                     title: const Text('Branches & Shifts'),
                     subtitle: const Text('Locations, geofence & shifts'),
                     onTap: () => _open(const BranchesShiftsScreen()),
+                  ),
+
+                  _section('Admin Tools'),
+                  ListTile(
+                    leading: const Icon(Icons.rule_folder),
+                    title: const Text('Fix status shift (missing shiftId)'),
+                    subtitle: const Text('Fill shiftId/shiftName for absent/off/sick/leave'),
+                    onTap: () => _open(const FixMissingShiftForStatusesScreen()),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.auto_fix_high),
+                    title: const Text('Fix legacy IDs'),
+                    subtitle: const Text('Convert old branchId/shiftId to real doc IDs'),
+                    onTap: () => _open(const FixIdsScreen()),
                   ),
 
                   _section('Settings'),
