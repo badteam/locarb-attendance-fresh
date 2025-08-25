@@ -9,6 +9,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/attendance_report_screen.dart';
 import 'admin/fix_missing_shift_for_statuses.dart';
+import 'admin/fix_ids_screen.dart'; // أعلى الملف
+
 
 // كان: import 'screens/users_screen.dart';
 import 'screens/admin_users_screen.dart';           // ✅ النسخة الإدارية الجديدة
@@ -87,6 +89,8 @@ class App extends StatelessWidget {
             '/admin': (_) => const AdminPanelScreen(),
             '/employee': (_) => const EmployeeHomeScreen(),
             '/admin/fix-status-shift': (_) => const FixMissingShiftForStatusesScreen(),
+            '/admin/fix-ids': (_) => const FixIdsScreen(),
+
 
           },
         );
