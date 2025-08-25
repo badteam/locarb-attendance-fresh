@@ -36,14 +36,14 @@ class AttendanceReportScreen extends StatefulWidget {
 class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   late DateTime _from;
   late DateTime _to;
-  String? _branchId;
-  String? _shiftId;
+  String? _branchId; // selected branch DOC ID (or null = all)
+  String? _shiftId;  // selected shift DOC ID (or null = all)
   late bool _onlyEx;
 
   final Map<String, Map<String, dynamic>> _usersCache = {};
   final Map<String, String> _userNames = {};
-  final Map<String, String> _branchNames = {};
-  final Map<String, String> _shiftNames  = {};
+  final Map<String, String> _branchNames = {}; // docId -> name (for display)
+  final Map<String, String> _shiftNames  = {}; // docId -> name (for display)
 
   @override
   void initState() {
@@ -103,10 +103,10 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     required String type,       // "in" | "out"
     required DateTime at,
     required String userName,
-    required String branchId,
-    required String branchName,
-    required String shiftId,
-    required String shiftName,
+    required String branchId,   // DOC ID
+    required String branchName, // display only
+    required String shiftId,    // DOC ID
+    required String shiftName,  // display only
   }) async {
     final col = FirebaseFirestore.instance.collection('attendance');
 
@@ -123,10 +123,10 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
       'localDay': localDay,
       'type': type,
       'at': Timestamp.fromDate(at),
-      'branchId': branchId,
-      'branchName': branchName,
-      'shiftId': shiftId,
-      'shiftName': shiftName,
+      'branchId': branchId,     // <— ID فقط
+      'branchName': branchName, // للعرض فقط
+      'shiftId': shiftId,       // <— ID فقط
+      'shiftName': shiftName,   // للعرض فقط
       'source': 'manual',
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
@@ -150,7 +150,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     }
   }
 
-  // ======== تعليم اليوم Off/Sick/Leave ========
+  // ======== Day status (Off/Sick/Leave) ========
   Future<void> _setDayStatus({
     required String uid,
     required String localDay,
@@ -240,8 +240,14 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
       final snap = await q.get();
       var docs = snap.docs;
 
-      // فلترة مرنة
-      docs = _filterByUserBranchShift(docs);
+      // فلترة IDs فقط
+      docs = docs.where((d) {
+        final m = d.data();
+        if (widget.userId?.isNotEmpty == true && m['userId'] != widget.userId) return false;
+        if (_branchId?.isNotEmpty == true && m['branchId'] != _branchId) return false;
+        if (_shiftId?.isNotEmpty  == true && m['shiftId']  != _shiftId ) return false;
+        return true;
+      }).toList();
 
       if (docs.isEmpty) {
         if (!mounted) return;
@@ -285,7 +291,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     }
   }
 
-  // ======== الاستعلام الأساسي ========
   Query<Map<String, dynamic>> _buildAttendanceQuery() {
     DateTime from = _from, to = _to;
     if (from.isAfter(to)) { final t = from; from = to; to = t; }
@@ -297,7 +302,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
         .orderBy('localDay', descending: true);
   }
 
-  // ======== Fallback ========
+  // fallback لو الكويري ما رجّعش حاجة (نجيب آخر 200 ونفلتر محليًا بالمجال الزمني فقط)
   Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>> _fallbackFetch() async {
     final snap = await FirebaseFirestore.instance
         .collection('attendance')
@@ -314,54 +319,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
       if (day.isEmpty) return false;
       return day.compareTo(fromStr) >= 0 && day.compareTo(toStr) <= 0;
     }).toList();
-  }
-
-  // ======== فلترة مرنة بالـ ID أو الاسم (كيس-إنسنسيتف) ========
-  List<QueryDocumentSnapshot<Map<String, dynamic>>> _filterByUserBranchShift(
-    List<QueryDocumentSnapshot<Map<String, dynamic>>> input,
-  ) {
-    final out = input.where((d) {
-      final m = d.data();
-
-      if (widget.userId?.isNotEmpty == true && m['userId'] != widget.userId) return false;
-
-      // Branch
-      if (_branchId?.isNotEmpty == true) {
-        final docBid   = (m['branchId'] ?? '').toString();
-        final docBname = (m['branchName'] ?? '').toString();
-        final wantBname = (_branchNames[_branchId!] ?? '').toString();
-
-        // لو القايمة لسه ما اتملتش ومش عارفين الاسم → مانفلترش
-        if (wantBname.isEmpty && docBid != _branchId) return false;
-
-        final a = docBid.trim().toLowerCase();
-        final b = _branchId!.trim().toLowerCase();
-        final n1 = docBname.trim().toLowerCase();
-        final n2 = wantBname.trim().toLowerCase();
-
-        if (!(a == b || (n2.isNotEmpty && n1 == n2))) return false;
-      }
-
-      // Shift
-      if (_shiftId?.isNotEmpty == true) {
-        final docSid   = (m['shiftId'] ?? '').toString();
-        final docSname = (m['shiftName'] ?? '').toString();
-        final wantSname = (_shiftNames[_shiftId!] ?? '').toString();
-
-        if (wantSname.isEmpty && docSid != _shiftId) return false;
-
-        final a = docSid.trim().toLowerCase();
-        final b = _shiftId!.trim().toLowerCase();
-        final n1 = docSname.trim().toLowerCase();
-        final n2 = wantSname.trim().toLowerCase();
-
-        if (!(a == b || (n2.isNotEmpty && n1 == n2))) return false;
-      }
-
-      return true;
-    }).toList();
-
-    return out;
   }
 
   @override
@@ -434,13 +391,16 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                       }
                       if (fb.hasError) return _ErrorBox(error: fb.error.toString());
 
-                      // 1) قبل الفلترة
                       List<QueryDocumentSnapshot<Map<String, dynamic>>> docs = fb.data ?? baseDocs;
-                      final countAll = docs.length;
 
-                      // 2) فلترة مرنة
-                      final filtered = _filterByUserBranchShift(docs);
-                      final countAfterFilter = filtered.length;
+                      // فلترة IDs فقط
+                      final filtered = docs.where((d) {
+                        final m = d.data();
+                        if (widget.userId?.isNotEmpty == true && m['userId'] != widget.userId) return false;
+                        if (_branchId?.isNotEmpty == true && m['branchId'] != _branchId) return false;
+                        if (_shiftId?.isNotEmpty  == true && m['shiftId']  != _shiftId ) return false;
+                        return true;
+                      }).toList();
 
                       // ====== تجميع حسب (userId + localDay) ======
                       final Map<String, _DaySummary> byUserDay = {};
@@ -511,6 +471,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                         }
                       }
 
+                      // حساب عمل/OT + Missing
                       for (final entry in byUserDay.entries) {
                         final key = entry.key;
                         final r = entry.value;
@@ -553,47 +514,22 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
 
                       var rows = byUserDay.values.toList();
                       if (_onlyEx) rows = rows.where((r) => r.isAbsent || r.missingIn || r.missingOut).toList();
-                      final countRows = rows.length;
 
                       if (rows.isEmpty) {
                         final hasAnyDocs = filtered.isNotEmpty;
                         final msg = _onlyEx && hasAnyDocs
                             ? 'No exceptions in this range'
                             : 'No records in the selected range';
-                        return Column(
-                          children: [
-                            Expanded(child: Center(child: Text(msg))),
-                            Padding(
-                              padding: const EdgeInsets.only(bottom: 6),
-                              child: Text(
-                                'debug all=$countAll, afterBranchShift=$countAfterFilter, rows=$countRows',
-                                style: const TextStyle(fontSize: 11, color: Colors.white54),
-                              ),
-                            ),
-                          ],
-                        );
+                        return Center(child: Text(msg));
                       }
 
                       rows.sort((a, b) => b.date.compareTo(a.date));
 
-                      return Column(
-                        children: [
-                          Expanded(
-                            child: ListView.separated(
-                              padding: const EdgeInsets.fromLTRB(12, 12, 12, 28),
-                              itemCount: rows.length,
-                              separatorBuilder: (_, __) => const SizedBox(height: 8),
-                              itemBuilder: (_, i) => _rowTile(rows[i]),
-                            ),
-                          ),
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 6),
-                            child: Text(
-                              'debug all=$countAll, afterBranchShift=$countAfterFilter, rows=$countRows',
-                              style: const TextStyle(fontSize: 11, color: Colors.white54),
-                            ),
-                          ),
-                        ],
+                      return ListView.separated(
+                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 28),
+                        itemCount: rows.length,
+                        separatorBuilder: (_, __) => const SizedBox(height: 8),
+                        itemBuilder: (_, i) => _rowTile(rows[i]),
                       );
                     },
                   );
@@ -843,9 +779,9 @@ class _DaySummary {
   final String localDay;
   final DateTime date;
   final String branchId;
-  final String branchName;
+  final String branchName; // للعرض
   final String shiftId;
-  final String shiftName;
+  final String shiftName;  // للعرض
 
   final double workHoursPerDay;
   final List<int> weekendDays; // 1..7
