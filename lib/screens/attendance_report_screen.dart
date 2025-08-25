@@ -36,14 +36,18 @@ class AttendanceReportScreen extends StatefulWidget {
 class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   late DateTime _from;
   late DateTime _to;
-  String? _branchId; // selected branch DOC ID (or null = all)
-  String? _shiftId;  // selected shift DOC ID (or null = all)
+  String? _branchId;
+  String? _shiftId;
   late bool _onlyEx;
 
+  // NEW: عرض خام للتشخيص
+  bool _rawMode = false;
+
+  // caches
   final Map<String, Map<String, dynamic>> _usersCache = {};
   final Map<String, String> _userNames = {};
-  final Map<String, String> _branchNames = {}; // docId -> name (for display)
-  final Map<String, String> _shiftNames  = {}; // docId -> name (for display)
+  final Map<String, String> _branchNames = {};
+  final Map<String, String> _shiftNames  = {};
 
   @override
   void initState() {
@@ -103,10 +107,10 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     required String type,       // "in" | "out"
     required DateTime at,
     required String userName,
-    required String branchId,   // DOC ID
-    required String branchName, // display only
-    required String shiftId,    // DOC ID
-    required String shiftName,  // display only
+    required String branchId,
+    required String branchName,
+    required String shiftId,
+    required String shiftName,
   }) async {
     final col = FirebaseFirestore.instance.collection('attendance');
 
@@ -123,15 +127,15 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
       'localDay': localDay,
       'type': type,
       'at': Timestamp.fromDate(at),
-      'branchId': branchId,     // <— ID فقط
-      'branchName': branchName, // للعرض فقط
-      'shiftId': shiftId,       // <— ID فقط
-      'shiftName': shiftName,   // للعرض فقط
+      'branchId': branchId,
+      'branchName': branchName,
+      'shiftId': shiftId,
+      'shiftName': shiftName,
       'source': 'manual',
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
 
-    batch.delete(absentRef);
+    batch.delete(absentRef); // لو موجود
 
     try {
       await batch.commit();
@@ -150,48 +154,53 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     }
   }
 
-  // ======== Day status (Off/Sick/Leave) ========
- Future<void> _setDayStatus({
-  required String uid,
-  required String localDay,
-  required String statusType, // "off" | "sick" | "leave" | "absent"
-  required String userName,
-  required String branchId,   // DOC ID
-  required String branchName, // عرض فقط
-  required String shiftId,    // DOC ID (مهم!)
-  required String shiftName,  // عرض فقط
-}) async {
-  final col = FirebaseFirestore.instance.collection('attendance');
-  final statusId = '${uid}_${localDay}_$statusType';
-  final absentId = '${uid}_${localDay}_absent';
+  // ======== تعليم اليوم Off/Sick/Leave + تجاهل الحسابات ========
+  Future<void> _setDayStatus({
+    required String uid,
+    required String localDay,
+    required String statusType, // "off" | "sick" | "leave"
+    required String userName,
+    required String branchId,
+    required String branchName,
+    required String shiftId,
+    required String shiftName,
+  }) async {
+    final col = FirebaseFirestore.instance.collection('attendance');
+    final statusId = '${uid}_${localDay}_$statusType';
+    final absentId = '${uid}_${localDay}_absent';
 
-  final batch = FirebaseFirestore.instance.batch();
-  batch.set(col.doc(statusId), {
-    'userId': uid,
-    'userName': userName,
-    'localDay': localDay,
-    'type': statusType,
-    'branchId': branchId,     // مهم
-    'branchName': branchName,
-    'shiftId': shiftId,       // مهم
-    'shiftName': shiftName,
-    'updatedAt': FieldValue.serverTimestamp(),
-  }, SetOptions(merge: true));
+    final batch = FirebaseFirestore.instance.batch();
+    batch.set(col.doc(statusId), {
+      'userId': uid,
+      'userName': userName,
+      'localDay': localDay,
+      'type': statusType,
+      'branchId': branchId,
+      'branchName': branchName,
+      'shiftId': shiftId,
+      'shiftName': shiftName,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+    batch.delete(col.doc(absentId)); // نظافة
 
-  // نظافة: لو كان فيه absent قديم لنفس اليوم امسحه
-  if (statusType != 'absent') {
-    batch.delete(col.doc(absentId));
+    try {
+      await batch.commit();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Marked as ${statusType.toUpperCase()}')),
+        );
+        setState(() {});
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to mark day: $e')),
+        );
+      }
+    }
   }
 
-  await batch.commit();
-  if (mounted) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Marked as ${statusType.toUpperCase()}')),
-    );
-    setState(() {});
-  }
-}
-
+  // ======== Reset Auto: امسح حالات اليوم (off/sick/leave/absent) واترك IN/OUT ========
   Future<void> _resetDayAuto(String uid, String localDay) async {
     final col = FirebaseFirestore.instance.collection('attendance');
     final ids = [
@@ -224,27 +233,24 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   // ======== Export Excel ========
   Future<void> _exportExcel() async {
     try {
-      DateTime from = _from, to = _to;
-      if (from.isAfter(to)) { final t = from; from = to; to = t; }
-
       Query<Map<String, dynamic>> q = FirebaseFirestore.instance
           .collection('attendance')
-          .where('localDay', isGreaterThanOrEqualTo: _fmtDay(from))
-          .where('localDay', isLessThanOrEqualTo: _fmtDay(to))
+          .where('localDay', isGreaterThanOrEqualTo: _fmtDay(_from))
+          .where('localDay', isLessThanOrEqualTo: _fmtDay(_to))
           .orderBy('localDay', descending: false);
 
       final snap = await q.get();
       var docs = snap.docs;
 
-      // فلترة IDs فقط
-      docs = docs.where((d) {
-        final m = d.data();
-        if (widget.userId?.isNotEmpty == true && m['userId'] != widget.userId) return false;
-        if (_branchId?.isNotEmpty == true && m['branchId'] != _branchId) return false;
-        if (_shiftId?.isNotEmpty  == true && m['shiftId']  != _shiftId ) return false;
-        return true;
-      }).toList();
-
+      if (widget.userId?.isNotEmpty == true) {
+        docs = docs.where((d) => (d.data()['userId'] ?? '') == widget.userId).toList();
+      }
+      if (_branchId?.isNotEmpty == true) {
+        docs = docs.where((d) => (d.data()['branchId'] ?? '') == _branchId).toList();
+      }
+      if (_shiftId?.isNotEmpty == true) {
+        docs = docs.where((d) => (d.data()['shiftId'] ?? '') == _shiftId).toList();
+      }
       if (docs.isEmpty) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No records to export for this range')));
@@ -263,11 +269,11 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
 
       final bytes = await Export.buildPivotExcelBytes(
         attendanceDocs: docs,
-        from: from,
-        to: to,
+        from: _from,
+        to: _to,
         userNames: names,
       );
-      final filename = 'attendance_${_fmtDay(from)}_${_fmtDay(to)}.xlsx';
+      final filename = 'attendance_${_fmtDay(_from)}_${_fmtDay(_to)}.xlsx';
 
       if (kIsWeb) {
         final blob = html.Blob([Uint8List.fromList(bytes)]);
@@ -287,48 +293,28 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     }
   }
 
-  Query<Map<String, dynamic>> _buildAttendanceQuery() {
-    DateTime from = _from, to = _to;
-    if (from.isAfter(to)) { final t = from; from = to; to = t; }
-
-    return FirebaseFirestore.instance
-        .collection('attendance')
-        .where('localDay', isGreaterThanOrEqualTo: _fmtDay(from))
-        .where('localDay', isLessThanOrEqualTo: _fmtDay(to))
-        .orderBy('localDay', descending: true);
-  }
-
-  // fallback لو الكويري ما رجّعش حاجة (نجيب آخر 200 ونفلتر محليًا بالمجال الزمني فقط)
-  Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>> _fallbackFetch() async {
-    final snap = await FirebaseFirestore.instance
-        .collection('attendance')
-        .orderBy('localDay', descending: true)
-        .limit(200)
-        .get();
-
-    final fromStr = _fmtDay(_from);
-    final toStr   = _fmtDay(_to);
-
-    return snap.docs.where((d) {
-      final m = d.data();
-      final day = (m['localDay'] ?? '').toString();
-      if (day.isEmpty) return false;
-      return day.compareTo(fromStr) >= 0 && day.compareTo(toStr) <= 0;
-    }).toList();
-  }
-
   @override
   Widget build(BuildContext context) {
     final usersRef    = FirebaseFirestore.instance.collection('users');
     final branchesRef = FirebaseFirestore.instance.collection('branches').orderBy('name');
     final shiftsRef   = FirebaseFirestore.instance.collection('shifts').orderBy('name');
 
-    final q = _buildAttendanceQuery();
+    final q = FirebaseFirestore.instance
+        .collection('attendance')
+        .where('localDay', isGreaterThanOrEqualTo: _fmtDay(_from))
+        .where('localDay', isLessThanOrEqualTo: _fmtDay(_to))
+        .orderBy('localDay', descending: true);
 
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.userName ?? 'Attendance Reports'),
         actions: [
+          // NEW: زر RAW
+          IconButton(
+            tooltip: _rawMode ? 'Show grouped' : 'Show RAW',
+            onPressed: () => setState(() => _rawMode = !_rawMode),
+            icon: Icon(_rawMode ? Icons.view_agenda : Icons.bug_report),
+          ),
           IconButton(
             tooltip: 'Export Excel',
             onPressed: _exportExcel,
@@ -369,170 +355,186 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
             _filtersBar(branchesRef, shiftsRef),
             const Divider(height: 1),
             Expanded(
-              child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>>(
                 stream: q.snapshots(),
                 builder: (context, snap) {
-                  if (snap.hasError) return _ErrorBox(error: snap.error.toString());
+                  if (snap.hasError) {
+                    return _ErrorBox(error: snap.error.toString());
+                  }
                   if (snap.connectionState == ConnectionState.waiting) {
                     return const Center(child: CircularProgressIndicator());
                   }
 
-                  List<QueryDocumentSnapshot<Map<String, dynamic>>> baseDocs = snap.data?.docs ?? [];
+                  final allDocs = snap.data?.docs ?? [];
+                  int afterBranchShift = 0;
 
-                  return FutureBuilder<List<QueryDocumentSnapshot<Map<String, dynamic>>>>(
-                    future: baseDocs.isEmpty ? _fallbackFetch() : Future.value(baseDocs),
-                    builder: (context, fb) {
-                      if (fb.connectionState == ConnectionState.waiting && baseDocs.isEmpty) {
-                        return const Center(child: CircularProgressIndicator());
-                      }
-                      if (fb.hasError) return _ErrorBox(error: fb.error.toString());
+                  // RAW MODE: اعرض المستندات كما هي
+                  if (_rawMode) {
+                    final raw = allDocs.where((d) {
+                      final m = d.data();
+                      if (widget.userId?.isNotEmpty == true && m['userId'] != widget.userId) return false;
+                      if (_branchId?.isNotEmpty == true && (m['branchId'] ?? '') != _branchId) return false;
+                      if (_shiftId?.isNotEmpty  == true && (m['shiftId']  ?? '') != _shiftId ) return false;
+                      return true;
+                    }).toList();
+                    afterBranchShift = raw.length;
 
-                      List<QueryDocumentSnapshot<Map<String, dynamic>>> docs = fb.data ?? baseDocs;
+                    return Column(
+                      children: [
+                        Expanded(
+                          child: raw.isEmpty
+                              ? const Center(child: Text('RAW: no documents for current filters/date'))
+                              : ListView.builder(
+                                  itemCount: raw.length,
+                                  itemBuilder: (_, i) {
+                                    final m = raw[i].data();
+                                    return ListTile(
+                                      dense: true,
+                                      title: Text('${m['localDay'] ?? ''} • ${m['userId'] ?? ''} • ${m['type'] ?? ''}'),
+                                      subtitle: Text(
+                                        'branchId=${m['branchId']} (${m['branchName']}) | '
+                                        'shiftId=${m['shiftId']} (${m['shiftName']})',
+                                      ),
+                                    );
+                                  },
+                                ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 6),
+                          child: Text('debug all=${allDocs.length}, afterBranchShift=$afterBranchShift'),
+                        ),
+                      ],
+                    );
+                  }
 
-                      // فلترة IDs فقط
-                      final filtered = docs.where((d) {
-                        final m = d.data();
-                        if (widget.userId?.isNotEmpty == true && m['userId'] != widget.userId) return false;
-                        if (_branchId?.isNotEmpty == true && m['branchId'] != _branchId) return false;
-                        if (_shiftId?.isNotEmpty  == true && m['shiftId']  != _shiftId ) return false;
-                        return true;
-                      }).toList();
+                  // فلترة user/branch/shift (اسمية وبسيطة)
+                  final filtered = allDocs.where((d) {
+                    final m = d.data();
+                    if (widget.userId?.isNotEmpty == true && m['userId'] != widget.userId) return false;
 
-                      // ====== تجميع حسب (userId + localDay) ======
-                      final Map<String, _DaySummary> byUserDay = {};
-                      final Map<String, List<DateTime>> inTimes = {};
-                      final Map<String, List<DateTime>> outTimes = {};
+                    // Branch filter: لو مختار فرع لازم يساوي الـ doc.id
+                    if (_branchId?.isNotEmpty == true) {
+                      final bid = (m['branchId'] ?? '').toString();
+                      if (bid != _branchId) return false;
+                    }
 
-                      for (final d in filtered) {
-                        final m = d.data();
-                        final uid = (m['userId'] ?? '').toString();
-                        final day = (m['localDay'] ?? '').toString();
-                        if (uid.isEmpty || day.isEmpty) continue;
+                    // Shift filter: لو مختار شيفت لازم يساوي الـ doc.id
+                    // (سجلات قديمة بدون shiftId هتتفلتر لما يكون في اختيار محدد)
+                    if (_shiftId?.isNotEmpty == true) {
+                      final sid = (m['shiftId'] ?? '').toString();
+                      if (sid != _shiftId) return false;
+                    }
 
-                        final key = '$uid|$day';
-                        byUserDay.putIfAbsent(key, () {
-                          final u    = _usersCache[uid] ?? {};
-                          final bId  = (m['branchId'] ?? u['primaryBranchId'] ?? u['branchId'] ?? '').toString();
-                          final sId = (m['shiftId'] 
-      ?? u['assignedShiftId'] 
-      ?? u['shiftId'] 
-      ?? '').toString();
-                          final bNm  = (m['branchName'] ?? u['branchName'] ?? _branchNames[bId] ?? '').toString();
- final sNm = (m['shiftName'] 
-      ?? u['shiftName'] 
-      ?? _shiftNames[sId] 
-      ?? 'No shift').toString();
-                          final wp = (u['workPolicy'] ?? {}) as Map<String, dynamic>;
-                          final workHours = (wp['workHoursPerDay'] is num)
-                              ? (wp['workHoursPerDay'] as num).toDouble()
-                              : 9.0;
+                    return true;
+                  }).toList();
+                  afterBranchShift = filtered.length;
 
-                          List<int> weekendDays = <int>[5, 6];
-                          if (wp['weekendDays'] is List) {
-                            final raw = (wp['weekendDays'] as List)
-                                .map((e) => int.tryParse(e.toString()))
-                                .whereType<int>()
-                                .toList();
-                            if (raw.isNotEmpty) weekendDays = raw;
-                          }
-                          final holidays = (wp['holidays'] is List)
-                              ? (wp['holidays'] as List).map((e) => e.toString()).toSet()
-                              : <String>{};
+                  // ====== تجميع حسب (userId + localDay) ======
+                  final Map<String, _DaySummary> byUserDay = {};
+                  // نجمع الـ IN/OUT المتعددة
+                  final Map<String, List<DateTime>> inTimes = {};
+                  final Map<String, List<DateTime>> outTimes = {};
 
-                          return _DaySummary(
-                            uid: uid,
-                            userName: _userNames[uid] ?? (m['userName'] ?? uid).toString(),
-                            localDay: day,
-                            date: _parseDay(day),
-                            branchId: bId,
-                            branchName: bNm,
-                            shiftId: sId,
-                            shiftName: sNm,
-                            workHoursPerDay: workHours,
-                            weekendDays: weekendDays,
-                            holidays: holidays,
-                          );
-                        });
+                  for (final d in filtered) {
+                    final m = d.data();
+                    final uid = (m['userId'] ?? '').toString();
+                    final day = (m['localDay'] ?? '').toString();
+                    if (uid.isEmpty || day.isEmpty) continue;
 
-                        final typ = (m['type'] ?? '').toString().toLowerCase();
-                        final at  = m['at'] is Timestamp ? (m['at'] as Timestamp).toDate() : null;
+                    final key = '$uid|$day';
+                    byUserDay.putIfAbsent(key, () {
+                      final u    = _usersCache[uid] ?? {};
+                      final bId  = (m['branchId'] ?? u['primaryBranchId'] ?? u['branchId'] ?? '').toString();
 
-                        if (typ == 'in' && at != null) {
-                          inTimes.putIfAbsent(key, () => []).add(at);
-                        } else if (typ == 'out' && at != null) {
-                          outTimes.putIfAbsent(key, () => []).add(at);
-                        } else if (typ == 'absent') {
-                          byUserDay[key]!.isAbsent = true;
-                        } else if (typ == 'off') {
-                          byUserDay[key]!.isOff = true;
-                        } else if (typ == 'sick') {
-                          byUserDay[key]!.isSick = true;
-                        } else if (typ == 'leave') {
-                          byUserDay[key]!.isLeave = true;
-                        }
-                      }
+                      // Fallback للشيفت: من المستند -> من user -> فارغ
+                      final sId  = (m['shiftId']  ?? u['assignedShiftId'] ?? u['shiftId']  ?? '').toString();
 
-                      // حساب عمل/OT + Missing
-                      for (final entry in byUserDay.entries) {
-                        final key = entry.key;
-                        final r = entry.value;
+                      final bNm  = (m['branchName'] ?? u['branchName'] ?? _branchNames[bId] ?? '').toString();
+                      final sNm  = (m['shiftName']  ?? u['shiftName']  ?? _shiftNames[sId]  ?? 'No shift').toString();
 
-                        if (r.isOff || r.isSick || r.isLeave) {
-                          r.hasIn = r.hasOut = false;
-                          r.workedMinutes = 0;
-                          r.overtimeMinutes = 0;
-                          continue;
-                        }
-
-                        final ins = (inTimes[key] ?? [])..sort();
-                        final outs = (outTimes[key] ?? [])..sort();
-                        r.hasIn = ins.isNotEmpty;
-                        r.hasOut = outs.isNotEmpty;
-
-                        int i = 0, j = 0, worked = 0;
-                        while (i < ins.length && j < outs.length) {
-                          final inT = ins[i];
-                          final outT = outs[j];
-                          if (outT.isBefore(inT)) { j++; continue; }
-                          worked += outT.difference(inT).inMinutes;
-                          i++; j++;
-                        }
-                        r.workedMinutes = worked;
-
-                        final isWeekend = r.weekendDays.contains(r.date.weekday);
-                        final isHoliday = r.holidays.contains(r.localDay);
-                        final scheduled = (isWeekend || isHoliday) ? 0 : (r.workHoursPerDay * 60).round();
-                        r.overtimeMinutes = worked > scheduled ? worked - scheduled : 0;
-
-                        if (r.hasIn && !r.hasOut) r.missingOut = true;
-                        if (!r.hasIn && r.hasOut) r.missingIn  = true;
-
-                        if (r.hasIn || r.hasOut) r.isAbsent = false;
-
-                        r.inAt  = ins.isNotEmpty  ? ins.first  : null;
-                        r.outAt = outs.isNotEmpty ? outs.last  : null;
-                      }
-
-                      var rows = byUserDay.values.toList();
-                      if (_onlyEx) rows = rows.where((r) => r.isAbsent || r.missingIn || r.missingOut).toList();
-
-                      if (rows.isEmpty) {
-                        final hasAnyDocs = filtered.isNotEmpty;
-                        final msg = _onlyEx && hasAnyDocs
-                            ? 'No exceptions in this range'
-                            : 'No records in the selected range';
-                        return Center(child: Text(msg));
-                      }
-
-                      rows.sort((a, b) => b.date.compareTo(a.date));
-
-                      return ListView.separated(
-                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 28),
-                        itemCount: rows.length,
-                        separatorBuilder: (_, __) => const SizedBox(height: 8),
-                        itemBuilder: (_, i) => _rowTile(rows[i]),
+                      return _DaySummary(
+                        uid: uid,
+                        userName: _userNames[uid] ?? uid,
+                        localDay: day,
+                        date: _parseDay(day),
+                        branchId: bId,
+                        branchName: bNm,
+                        shiftId: sId,
+                        shiftName: sNm,
                       );
-                    },
+                    });
+
+                    final typ = (m['type'] ?? '').toString();
+                    final at  = m['at'] is Timestamp ? (m['at'] as Timestamp).toDate() : null;
+
+                    if (typ == 'in' && at != null) {
+                      inTimes.putIfAbsent(key, () => []).add(at);
+                      byUserDay[key]!.hasIn = true;
+                    } else if (typ == 'out' && at != null) {
+                      outTimes.putIfAbsent(key, () => []).add(at);
+                      byUserDay[key]!.hasOut = true;
+                    } else if (typ == 'absent') {
+                      byUserDay[key]!.isAbsent = true;
+                    } else if (typ == 'off') {
+                      byUserDay[key]!.isOff = true;
+                    } else if (typ == 'sick') {
+                      byUserDay[key]!.isSick = true;
+                    } else if (typ == 'leave') {
+                      byUserDay[key]!.isLeave = true;
+                    }
+                  }
+
+                  // حساب بسيط للـ IN/OUT وعرض الشيفت الافتراضي
+                  for (final entry in byUserDay.entries) {
+                    final key = entry.key;
+                    final r = entry.value;
+
+                    final ins = (inTimes[key] ?? [])..sort();
+                    final outs = (outTimes[key] ?? [])..sort();
+                    r.inAt  = ins.isNotEmpty  ? ins.first  : null;
+                    r.outAt = outs.isNotEmpty ? outs.last  : null;
+
+                    if (r.hasIn || r.hasOut) r.isAbsent = false;
+                  }
+
+                  var rows = byUserDay.values.toList()
+                    ..sort((a, b) => b.date.compareTo(a.date));
+
+                  if (_onlyEx) {
+                    rows = rows.where((r) =>
+                      r.isAbsent || (r.hasIn && !r.hasOut) || (!r.hasIn && r.hasOut)
+                    ).toList();
+                  }
+
+                  if (rows.isEmpty) {
+                    return Column(
+                      children: [
+                        const Expanded(
+                          child: Center(child: Text('No records in the selected range')),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 6),
+                          child: Text('debug all=${allDocs.length}, afterBranchShift=$afterBranchShift, rows=${rows.length}'),
+                        ),
+                      ],
+                    );
+                  }
+
+                  return Column(
+                    children: [
+                      Expanded(
+                        child: ListView.separated(
+                          padding: const EdgeInsets.fromLTRB(12, 12, 12, 28),
+                          itemCount: rows.length,
+                          separatorBuilder: (_, __) => const SizedBox(height: 8),
+                          itemBuilder: (_, i) => _rowTile(rows[i]),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 6),
+                        child: Text('debug all=${allDocs.length}, afterBranchShift=$afterBranchShift, rows=${rows.length}'),
+                      ),
+                    ],
                   );
                 },
               ),
@@ -640,15 +642,16 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   }
 
   Widget _rowTile(_DaySummary r) {
+    // تحديد الحالة والعرض
     String status;
     Color color;
 
-    if (r.isOff)      { status = 'Off';        color = Colors.grey;   }
-    else if (r.isSick){ status = 'Sick';       color = Colors.purple; }
-    else if (r.isLeave){ status = 'Leave';     color = Colors.blue;   }
+    if (r.isOff)   { status = 'Off';   color = Colors.grey;   }
+    else if (r.isSick)  { status = 'Sick';  color = Colors.purple; }
+    else if (r.isLeave) { status = 'Leave'; color = Colors.blue;   }
     else if (r.hasIn && r.hasOut) { status = 'Present';     color = Colors.green;  }
-    else if (r.hasIn && !r.hasOut){ status = 'Missing OUT'; color = Colors.orange; }
-    else if (!r.hasIn && r.hasOut){ status = 'Missing IN';  color = Colors.orange; }
+    else if (r.hasIn && !r.hasOut) { status = 'Missing OUT'; color = Colors.orange; }
+    else if (!r.hasIn && r.hasOut) { status = 'Missing IN';  color = Colors.orange; }
     else if (r.isAbsent) { status = 'Absent'; color = Colors.red; }
     else { status = 'Absent'; color = Colors.red; }
 
@@ -659,14 +662,9 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
         ? r.shiftName
         : (_shiftNames[r.shiftId] ?? 'No shift');
 
-    final showOT = !(r.isOff || r.isSick || r.isLeave);
-    final otChip = showOT
-        ? Chip(label: Text('OT ${_fmtHM(r.overtimeMinutes)}'))
-        : const SizedBox.shrink();
-
     return Card(
       child: ListTile(
-        title: Text('${_fmtDay(r.date)} • ${_userNames[r.uid] ?? r.uid}'),
+        title: Text('${_fmtDay(r.date)} • ${r.userName}'),
         subtitle: Wrap(
           spacing: 8, runSpacing: 6, children: [
             Chip(label: Text(status), backgroundColor: color, labelStyle: const TextStyle(color: Colors.white)),
@@ -674,13 +672,12 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
             Chip(label: Text('OUT ${_fmtTime(r.outAt)}')),
             Chip(label: Text('Branch: $displayBranch')),
             Chip(label: Text('Shift: $displayShift')),
-            otChip,
           ],
         ),
         trailing: widget.allowEditing ? PopupMenuButton<String>(
           onSelected: (v) async {
             final localDay = r.localDay;
-            final userName = _userNames[r.uid] ?? r.uid;
+            final userName = r.userName;
             final bId = r.branchId;
             final bName = displayBranch;
             final sId = r.shiftId;
@@ -780,13 +777,9 @@ class _DaySummary {
   final String localDay;
   final DateTime date;
   final String branchId;
-  final String branchName; // للعرض
+  final String branchName;
   final String shiftId;
-  final String shiftName;  // للعرض
-
-  final double workHoursPerDay;
-  final List<int> weekendDays; // 1..7
-  final Set<String> holidays;
+  final String shiftName;
 
   bool hasIn = false;
   bool hasOut = false;
@@ -794,11 +787,6 @@ class _DaySummary {
   bool isOff = false;
   bool isSick = false;
   bool isLeave = false;
-  bool missingIn = false;
-  bool missingOut = false;
-
-  int workedMinutes = 0;
-  int overtimeMinutes = 0;
 
   DateTime? inAt;
   DateTime? outAt;
@@ -812,15 +800,12 @@ class _DaySummary {
     required this.branchName,
     required this.shiftId,
     required this.shiftName,
-    required this.workHoursPerDay,
-    required this.weekendDays,
-    required this.holidays,
   });
 
   void setIn(DateTime? t) { hasIn = true; if (t != null) inAt = t; }
   void setOut(DateTime? t){ hasOut = true; if (t != null) outAt = t; }
 
-  bool get isException => isAbsent || missingIn || missingOut;
+  bool get isException => isAbsent || (hasIn && !hasOut) || (!hasIn && hasOut);
 }
 
 // ====== Loader ======
@@ -878,7 +863,9 @@ class _ErrorBox extends StatelessWidget {
         color: Theme.of(context).colorScheme.errorContainer,
         child: Padding(
           padding: const EdgeInsets.all(16),
-          child: Text('Query error:\n$error'),
+          child: Text(
+            'Query error:\n$error\n\nIf an index is required, select "All branches/shifts" or create the suggested index in Firestore.',
+          ),
         ),
       ),
     );
