@@ -413,10 +413,15 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                         byUserDay.putIfAbsent(key, () {
                           final u    = _usersCache[uid] ?? {};
                           final bId  = (m['branchId'] ?? u['primaryBranchId'] ?? u['branchId'] ?? '').toString();
-                          final sId  = (m['shiftId']  ?? u['assignedShiftId'] ?? u['shiftId']  ?? '').toString();
+                          final sId = (m['shiftId'] 
+      ?? u['assignedShiftId'] 
+      ?? u['shiftId'] 
+      ?? '').toString();
                           final bNm  = (m['branchName'] ?? u['branchName'] ?? _branchNames[bId] ?? '').toString();
-                          final sNm  = (m['shiftName']  ?? u['shiftName']  ?? _shiftNames[sId]  ?? '').toString();
-
+ final sNm = (m['shiftName'] 
+      ?? u['shiftName'] 
+      ?? _shiftNames[sId] 
+      ?? 'No shift').toString();
                           final wp = (u['workPolicy'] ?? {}) as Map<String, dynamic>;
                           final workHours = (wp['workHoursPerDay'] is num)
                               ? (wp['workHoursPerDay'] as num).toDouble()
