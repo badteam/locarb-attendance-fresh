@@ -1,13 +1,12 @@
 // lib/screens/attendance_report_screen.dart
 import 'dart:typed_data';
 import 'dart:html' as html;
-import 'dart:convert';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
-import '../utils/export.dart';       // Export.buildExcelFromSummaries
+import '../utils/export.dart';
 import '../widgets/main_drawer.dart';
 
 class AttendanceReportScreen extends StatefulWidget {
@@ -41,10 +40,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   String? _shiftId;
   late bool _onlyEx;
 
-  // RAW diagnostic toggle (نخليه شغال لحد ما نخلّص التصدير، وبعدين نشيله)
-  bool _rawMode = false;
-
-  // caches
   final Map<String, Map<String, dynamic>> _usersCache = {};
   final Map<String, String> _userNames = {};
   final Map<String, String> _branchNames = {};
@@ -75,7 +70,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     return '$h:$m';
   }
 
-  // (ب) HH:MM من دقائق
   String _fmtHM(int minutes) {
     final h = (minutes ~/ 60).toString().padLeft(2, '0');
     final m = (minutes % 60).toString().padLeft(2, '0');
@@ -105,7 +99,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   Future<TimeOfDay?> _pickTime(String title) =>
       showTimePicker(context: context, helpText: title, initialTime: const TimeOfDay(hour: 9, minute: 0));
 
-  // ======== كتابة IN/OUT + مسح absent ========
+  // ========= الحفظ + حذف أي absent =========
   Future<void> _setPunch({
     required String uid,
     required String localDay,   // YYYY-MM-DD
@@ -119,14 +113,8 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   }) async {
     final col = FirebaseFirestore.instance.collection('attendance');
 
-    final punchId  = '${uid}_${localDay}_$type';
-    final absentId = '${uid}_${localDay}_absent';
-
-    final batch = FirebaseFirestore.instance.batch();
-    final punchRef  = col.doc(punchId);
-    final absentRef = col.doc(absentId);
-
-    batch.set(punchRef, {
+    final punchId = '${uid}_${localDay}_$type';
+    await col.doc(punchId).set({
       'userId': uid,
       'userName': userName,
       'localDay': localDay,
@@ -140,119 +128,38 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
 
-    batch.delete(absentRef); // لو موجود
-
-    try {
-      await batch.commit();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Saved. Absent cleared (if existed).')),
-        );
-        setState(() {});
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Save failed: $e')),
-        );
-      }
-    }
-  }
-
-  // ======== تعليم اليوم Off/Sick/Leave ========
-  Future<void> _setDayStatus({
-    required String uid,
-    required String localDay,
-    required String statusType, // "off" | "sick" | "leave"
-    required String userName,
-    required String branchId,
-    required String branchName,
-    required String shiftId,
-    required String shiftName,
-  }) async {
-    final col = FirebaseFirestore.instance.collection('attendance');
-    final statusId = '${uid}_${localDay}_$statusType';
     final absentId = '${uid}_${localDay}_absent';
+    final absentRef = col.doc(absentId);
+    final snap = await absentRef.get();
+    if (snap.exists) {
+      await absentRef.delete();
+    }
 
-    final batch = FirebaseFirestore.instance.batch();
-    batch.set(col.doc(statusId), {
-      'userId': uid,
-      'userName': userName,
-      'localDay': localDay,
-      'type': statusType,
-      'branchId': branchId,
-      'branchName': branchName,
-      'shiftId': shiftId,
-      'shiftName': shiftName,
-      'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
-    batch.delete(col.doc(absentId)); // نظافة
-
-    try {
-      await batch.commit();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Marked as ${statusType.toUpperCase()}')),
-        );
-        setState(() {});
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to mark day: $e')),
-        );
-      }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Attendance saved & absent cleared if existed')),
+      );
+      setState(() {});
     }
   }
 
-  // ======== Reset Auto ========
-  Future<void> _resetDayAuto(String uid, String localDay) async {
-    final col = FirebaseFirestore.instance.collection('attendance');
-    final ids = [
-      '${uid}_${localDay}_off',
-      '${uid}_${localDay}_sick',
-      '${uid}_${localDay}_leave',
-      '${uid}_${localDay}_absent',
-    ];
-    final batch = FirebaseFirestore.instance.batch();
-    for (final id in ids) {
-      batch.delete(col.doc(id));
-    }
-    try {
-      await batch.commit();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Day reset to auto (kept IN/OUT).')),
-        );
-        setState(() {});
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Reset failed: $e')),
-        );
-      }
-    }
-  }
-
-  // ======== (ج) حساب صفوف التصدير (IN/OUT/Status + Worked/Scheduled/OT) ========
+  // ======== تجميع صفوف التصدير + حساب Worked/Scheduled/OT ========
   List<_ExportRow> _computeRowsForExport(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
-    // فلترة user/branch/shift زي العرض
+    // فلترة user/branch/shift
     final filtered = docs.where((d) {
-      final m = Map<String, dynamic>.from(d.data());
+      final m = d.data();
       if (widget.userId?.isNotEmpty == true && m['userId'] != widget.userId) return false;
       if (_branchId?.isNotEmpty == true && (m['branchId'] ?? '') != _branchId) return false;
       if (_shiftId?.isNotEmpty == true && (m['shiftId'] ?? '') != _shiftId) return false;
       return true;
     }).toList();
 
-    // تجميع IN/OUT باليوم والمستخدم
     final Map<String, List<DateTime>> ins = {};
     final Map<String, List<DateTime>> outs = {};
     final Map<String, _ExportRow> byKey = {};
 
     for (final d in filtered) {
-      final m = Map<String, dynamic>.from(d.data());
+      final m = d.data();
       final uid = (m['userId'] ?? '').toString();
       final day = (m['localDay'] ?? '').toString();
       if (uid.isEmpty || day.isEmpty) continue;
@@ -265,32 +172,17 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
         final bNm = (m['branchName'] ?? _branchNames[bId] ?? '').toString();
         final sNm = (m['shiftName']  ?? _shiftNames[sId]  ?? '').toString();
 
-        // سياسة عمل بسيطة من users (لو موجودة)
-       // حول user map لنسخة Dart حقيقية
-final Map<String, dynamic> u =
-    (_usersCache[uid] is Map) ? Map<String, dynamic>.from(_usersCache[uid]!) : <String, dynamic>{};
+        // سياسة يومية (workPolicy) من users، آمنة ضد JsMap
+        final Map<String, dynamic> u =
+            (_usersCache[uid] is Map) ? Map<String, dynamic>.from(_usersCache[uid]!) : <String, dynamic>{};
+        final dynamic wpRaw = u['workPolicy'];
+        final Map<String, dynamic> wp = (wpRaw is Map)
+            ? Map<String, dynamic>.from(wpRaw as Map)
+            : <String, dynamic>{};
 
-// workPolicy ممكن تكون null / JsMap / أي نوع… نعالج كله
-final dynamic wpRaw = u['workPolicy'];
-final Map<String, dynamic> wp = (wpRaw is Map)
-    ? Map<String, dynamic>.from(wpRaw as Map)
-    : <String, dynamic>{};
-
-// قراءة الحقول بأمان
-final double workHours = (wp['workHoursPerDay'] is num)
-    ? (wp['workHoursPerDay'] as num).toDouble()
-    : 9.0;
-
-final List<int> weekend = (wp['weekendDays'] is List)
-    ? (wp['weekendDays'] as List)
-        .map((e) => int.tryParse(e.toString()) ?? -1)
-        .where((e) => e >= 0)
-        .toList()
-    : <int>[5, 6];
-
-final Set<String> holidays = (wp['holidays'] is List)
-    ? (wp['holidays'] as List).map((e) => e.toString()).toSet()
-    : <String>{};
+        final double workHours = (wp['workHoursPerDay'] is num)
+            ? (wp['workHoursPerDay'] as num).toDouble()
+            : 9.0; // الافتراضي 9 ساعات
 
         return _ExportRow(
           dateStr: day,
@@ -298,9 +190,6 @@ final Set<String> holidays = (wp['holidays'] is List)
           branchId: bId, branchName: bNm,
           shiftId: sId, shiftName: sNm,
           workHoursPerDay: workHours,
-          weekendDays: weekend,
-          holidays: holidays,
-          scheduledMinutes: 0,
         );
       });
 
@@ -324,15 +213,15 @@ final Set<String> holidays = (wp['holidays'] is List)
       }
     }
 
-    // احسب worked/scheduled/ot + in/out display
+    // احسب العمل والـ OT
     for (final e in byKey.entries) {
       final key = e.key;
       final r = e.value;
 
-      // Off/Sick/Leave → no calc
       if (r.isOff || r.isSick || r.isLeave) {
         r.workedMinutes = 0;
         r.scheduledMinutes = 0;
+        r.overtimeMinutes = 0;
         r.inAt = null; r.outAt = null;
         continue;
       }
@@ -343,7 +232,6 @@ final Set<String> holidays = (wp['holidays'] is List)
       r.inAt  = inList.isNotEmpty  ? inList.first  : null;
       r.outAt = outList.isNotEmpty ? outList.last  : null;
 
-      // أزواج IN/OUT
       int i = 0, j = 0, worked = 0;
       while (i < inList.length && j < outList.length) {
         final a = inList[i], b = outList[j];
@@ -353,23 +241,20 @@ final Set<String> holidays = (wp['holidays'] is List)
       }
       r.workedMinutes = worked;
 
-      final dateObj = DateTime.parse(r.dateStr);
-      final weekday = dateObj.weekday; // Mon=1..Sun=7
-      final isWeekend = r.weekendDays.contains(weekday);
-      final isHoliday = r.holidays.contains(r.dateStr);
-      r.scheduledMinutes = (isWeekend || isHoliday) ? 0 : (r.workHoursPerDay * 60).round();
-
-      r.overtimeMinutes = worked > r.scheduledMinutes ? worked - r.scheduledMinutes : 0;
+      // Scheduled ثابت = workPolicy (افتراضي 9 ساعات)
+      final scheduled = (r.workHoursPerDay * 60).round();
+      r.scheduledMinutes = scheduled;
+      r.overtimeMinutes = worked > scheduled ? worked - scheduled : 0;
 
       if (r.hasIn || r.hasOut) r.isAbsent = false;
     }
 
     final rows = byKey.values.toList()
-      ..sort((a, b) => b.dateStr.compareTo(a.dateStr)); // أحدث فوق
+      ..sort((a, b) => b.dateStr.compareTo(a.dateStr));
     return rows;
   }
 
-  // ======== (د) تصدير XLSX باستخدام Export.buildExcelFromSummaries ========
+  // ======== تصدير Excel (Durations + Totals) ========
   Future<void> _exportExcel() async {
     try {
       final snap = await FirebaseFirestore.instance
@@ -388,7 +273,6 @@ final Set<String> holidays = (wp['holidays'] is List)
         return;
       }
 
-      // حوّل الملخصات إلى خرائط نصية لملف الإكسيل
       final mapped = rows.map((r) {
         final displayBranch = r.branchName.isNotEmpty ? r.branchName : (_branchNames[r.branchId] ?? 'No branch');
         final displayShift  = r.shiftName.isNotEmpty  ? r.shiftName  : (_shiftNames[r.shiftId] ?? 'No shift');
@@ -397,7 +281,7 @@ final Set<String> holidays = (wp['holidays'] is List)
             ? '—'
             : '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
 
-        return <String, String>{
+        return <String, dynamic>{
           'date': r.dateStr,
           'user': r.user,
           'branch': displayBranch,
@@ -405,13 +289,13 @@ final Set<String> holidays = (wp['holidays'] is List)
           'status': r.status,
           'in': fmt(r.inAt),
           'out': fmt(r.outAt),
-          'worked': _fmtHM(r.workedMinutes),
-          'scheduled': _fmtHM(r.scheduledMinutes),
-          'ot': _fmtHM(r.overtimeMinutes),
+          'workedMin': r.workedMinutes,
+          'scheduledMin': r.scheduledMinutes,
+          'otMin': r.overtimeMinutes,
         };
       }).toList();
 
-      final bytes = await Export.buildExcelFromSummaries(rows: mapped);
+      final bytes = await Export.buildExcelFromSummariesV2(rows: mapped);
       final filename = 'attendance_${_fmtDay(_from)}_${_fmtDay(_to)}.xlsx';
 
       if (kIsWeb) {
@@ -448,12 +332,6 @@ final Set<String> holidays = (wp['holidays'] is List)
       appBar: AppBar(
         title: Text(widget.userName ?? 'Attendance Reports'),
         actions: [
-          // RAW toggle (نقدر نشيله بعد ما نتاكد التصدير تمام)
-          IconButton(
-            tooltip: _rawMode ? 'Show grouped' : 'Show RAW',
-            onPressed: () => setState(() => _rawMode = !_rawMode),
-            icon: Icon(_rawMode ? Icons.view_agenda : Icons.bug_report),
-          ),
           IconButton(
             tooltip: 'Export Excel',
             onPressed: _exportExcel,
@@ -470,11 +348,11 @@ final Set<String> holidays = (wp['holidays'] is List)
           _userNames.clear();
           _usersCache.clear();
           for (final u in docs) {
-            final m = u.data();
+            final m = Map<String, dynamic>.from(u.data()); // مهم: خرائط Dart حقيقية
             final full = (m['fullName'] ?? m['name'] ?? '').toString();
             final uname = (m['username'] ?? '').toString();
             _userNames[u.id] = full.isNotEmpty ? full : (uname.isNotEmpty ? uname : u.id);
-            _usersCache[u.id] = Map<String, dynamic>.from(m);
+            _usersCache[u.id] = m;
           }
         },
         onBranches: (docs) {
@@ -497,78 +375,26 @@ final Set<String> holidays = (wp['holidays'] is List)
               child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                 stream: q.snapshots(),
                 builder: (context, snap) {
-                  if (snap.hasError) {
-                    return _ErrorBox(error: snap.error.toString());
-                  }
+                  if (snap.hasError) return _ErrorBox(error: snap.error.toString());
                   if (snap.connectionState == ConnectionState.waiting) {
                     return const Center(child: CircularProgressIndicator());
                   }
 
-                  final allDocs = snap.data?.docs ?? [];
-                  int afterBranchShift = 0;
+                  final docs = snap.data?.docs ?? [];
 
-                  // RAW MODE
-                  if (_rawMode) {
-                    final raw = allDocs.where((d) {
-                      final m = Map<String, dynamic>.from(d.data());
-                      if (widget.userId?.isNotEmpty == true && m['userId'] != widget.userId) return false;
-                      if (_branchId?.isNotEmpty == true && (m['branchId'] ?? '') != _branchId) return false;
-                      if (_shiftId?.isNotEmpty  == true && (m['shiftId']  ?? '') != _shiftId ) return false;
-                      return true;
-                    }).toList();
-                    afterBranchShift = raw.length;
-
-                    return Column(
-                      children: [
-                        Expanded(
-                          child: raw.isEmpty
-                              ? const Center(child: Text('RAW: no documents for current filters/date'))
-                              : ListView.builder(
-                                  itemCount: raw.length,
-                                  itemBuilder: (_, i) {
-                                    final m = raw[i].data();
-                                    return ListTile(
-                                      dense: true,
-                                      title: Text('${m['localDay'] ?? ''} • ${m['userId'] ?? ''} • ${m['type'] ?? ''}'),
-                                      subtitle: Text(
-                                        'branchId=${m['branchId']} (${m['branchName']}) | '
-                                        'shiftId=${m['shiftId']} (${m['shiftName']})',
-                                      ),
-                                    );
-                                  },
-                                ),
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 6),
-                          child: Text('debug all=${allDocs.length}, afterBranchShift=$afterBranchShift'),
-                        ),
-                      ],
-                    );
-                  }
-
-                  // فلترة user/branch/shift
-                  final filtered = allDocs.where((d) {
-                    final m = Map<String, dynamic>.from(d.data());
+                  // فلترة بسيطة
+                  final filtered = docs.where((d) {
+                    final m = d.data();
                     if (widget.userId?.isNotEmpty == true && m['userId'] != widget.userId) return false;
-                    if (_branchId?.isNotEmpty == true) {
-                      final bid = (m['branchId'] ?? '').toString();
-                      if (bid != _branchId) return false;
-                    }
-                    if (_shiftId?.isNotEmpty == true) {
-                      final sid = (m['shiftId'] ?? '').toString();
-                      if (sid != _shiftId) return false;
-                    }
+                    if (_branchId?.isNotEmpty == true && m['branchId'] != _branchId) return false;
+                    if (_shiftId?.isNotEmpty == true && m['shiftId'] != _shiftId) return false;
                     return true;
                   }).toList();
-                  afterBranchShift = filtered.length;
 
                   // ====== تجميع حسب (userId + localDay) ======
                   final Map<String, _DaySummary> byUserDay = {};
-                  final Map<String, List<DateTime>> inTimes = {};
-                  final Map<String, List<DateTime>> outTimes = {};
-
                   for (final d in filtered) {
-                    final m = Map<String, dynamic>.from(d.data());
+                    final m = d.data();
                     final uid = (m['userId'] ?? '').toString();
                     final day = (m['localDay'] ?? '').toString();
                     if (uid.isEmpty || day.isEmpty) continue;
@@ -579,7 +405,7 @@ final Set<String> holidays = (wp['holidays'] is List)
                       final bId  = (m['branchId'] ?? u['primaryBranchId'] ?? u['branchId'] ?? '').toString();
                       final sId  = (m['shiftId']  ?? u['assignedShiftId'] ?? u['shiftId']  ?? '').toString();
                       final bNm  = (m['branchName'] ?? u['branchName'] ?? _branchNames[bId] ?? '').toString();
-                      final sNm  = (m['shiftName']  ?? u['shiftName']  ?? _shiftNames[sId]  ?? 'No shift').toString();
+                      final sNm  = (m['shiftName']  ?? u['shiftName']  ?? _shiftNames[sId]  ?? '').toString();
 
                       return _DaySummary(
                         uid: uid,
@@ -596,74 +422,27 @@ final Set<String> holidays = (wp['holidays'] is List)
                     final typ = (m['type'] ?? '').toString();
                     final at  = m['at'] is Timestamp ? (m['at'] as Timestamp).toDate() : null;
 
-                    if (typ == 'in' && at != null) {
-                      inTimes.putIfAbsent(key, () => []).add(at);
-                      byUserDay[key]!.hasIn = true;
-                    } else if (typ == 'out' && at != null) {
-                      outTimes.putIfAbsent(key, () => []).add(at);
-                      byUserDay[key]!.hasOut = true;
-                    } else if (typ == 'absent') {
-                      byUserDay[key]!.isAbsent = true;
-                    } else if (typ == 'off') {
-                      byUserDay[key]!.isOff = true;
-                    } else if (typ == 'sick') {
-                      byUserDay[key]!.isSick = true;
-                    } else if (typ == 'leave') {
-                      byUserDay[key]!.isLeave = true;
-                    }
+                    if (typ == 'in')  byUserDay[key]!.setIn(at);
+                    if (typ == 'out') byUserDay[key]!.setOut(at);
+                    if (typ == 'absent') byUserDay[key]!.isAbsent = true;
+                    if (typ == 'off')    byUserDay[key]!.isOff = true;
+                    if (typ == 'sick')   byUserDay[key]!.isSick = true;
+                    if (typ == 'leave')  byUserDay[key]!.isLeave = true;
                   }
 
-                  // حساب بسيط للـ IN/OUT (العرض فقط)
-                  for (final entry in byUserDay.entries) {
-                    final key = entry.key;
-                    final r = entry.value;
-
-                    final ins = (inTimes[key] ?? [])..sort();
-                    final outs = (outTimes[key] ?? [])..sort();
-                    r.inAt  = ins.isNotEmpty  ? ins.first  : null;
-                    r.outAt = outs.isNotEmpty ? outs.last  : null;
-
+                  for (final r in byUserDay.values) {
                     if (r.hasIn || r.hasOut) r.isAbsent = false;
                   }
 
-                  var rows = byUserDay.values.toList()
-                    ..sort((a, b) => b.date.compareTo(a.date));
+                  var rows = byUserDay.values.toList()..sort((a, b) => b.date.compareTo(a.date));
+                  if (_onlyEx) rows = rows.where((r) => r.isException).toList();
 
-                  if (_onlyEx) {
-                    rows = rows.where((r) =>
-                      r.isAbsent || (r.hasIn && !r.hasOut) || (!r.hasIn && r.hasOut)
-                    ).toList();
-                  }
-
-                  if (rows.isEmpty) {
-                    return Column(
-                      children: [
-                        const Expanded(
-                          child: Center(child: Text('No records in the selected range')),
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 6),
-                          child: Text('debug all=${allDocs.length}, afterBranchShift=$afterBranchShift, rows=${rows.length}'),
-                        ),
-                      ],
-                    );
-                  }
-
-                  return Column(
-                    children: [
-                      Expanded(
-                        child: ListView.separated(
-                          padding: const EdgeInsets.fromLTRB(12, 12, 12, 28),
-                          itemCount: rows.length,
-                          separatorBuilder: (_, __) => const SizedBox(height: 8),
-                          itemBuilder: (_, i) => _rowTile(rows[i]),
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 6),
-                        child: Text('debug all=${allDocs.length}, afterBranchShift=$afterBranchShift, rows=${rows.length}'),
-                      ),
-                    ],
+                  if (rows.isEmpty) return const Center(child: Text('No records in the selected range'));
+                  return ListView.separated(
+                    padding: const EdgeInsets.fromLTRB(12, 12, 12, 28),
+                    itemCount: rows.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 8),
+                    itemBuilder: (_, i) => _rowTile(rows[i]),
                   );
                 },
               ),
@@ -773,8 +552,7 @@ final Set<String> holidays = (wp['holidays'] is List)
   Widget _rowTile(_DaySummary r) {
     String status;
     Color color;
-
-    if (r.isOff)   { status = 'Off';   color = Colors.grey;   }
+    if (r.isOff)        { status = 'Off';   color = Colors.grey;   }
     else if (r.isSick)  { status = 'Sick';  color = Colors.purple; }
     else if (r.isLeave) { status = 'Leave'; color = Colors.blue;   }
     else if (r.hasIn && r.hasOut) { status = 'Present';     color = Colors.green;  }
@@ -792,7 +570,7 @@ final Set<String> holidays = (wp['holidays'] is List)
 
     return Card(
       child: ListTile(
-        title: Text('${_fmtDay(r.date)} • ${r.userName}'),
+        title: Text('${_fmtDay(r.date)} • ${_userNames[r.uid] ?? r.uid}'),
         subtitle: Wrap(
           spacing: 8, runSpacing: 6, children: [
             Chip(label: Text(status), backgroundColor: color, labelStyle: const TextStyle(color: Colors.white)),
@@ -804,35 +582,20 @@ final Set<String> holidays = (wp['holidays'] is List)
         ),
         trailing: widget.allowEditing ? PopupMenuButton<String>(
           onSelected: (v) async {
-            final localDay = r.localDay;
-            final userName = r.userName;
-            final bId = r.branchId;
-            final bName = displayBranch;
-            final sId = r.shiftId;
-            final sName = displayShift;
-
             if (v == 'fix_in' || v == 'edit_in') {
               final tod = await _pickTime(v == 'fix_in' ? 'Fix IN time' : 'Edit IN time');
               if (tod != null) {
                 final when = DateTime(r.date.year, r.date.month, r.date.day, tod.hour, tod.minute);
-                if (r.outAt != null && when.isAfter(r.outAt!)) {
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('IN cannot be after OUT')),
-                    );
-                  }
-                  return;
-                }
                 await _setPunch(
                   uid: r.uid,
-                  localDay: localDay,
+                  localDay: r.localDay,
                   type: 'in',
                   at: when,
-                  userName: userName,
-                  branchId: bId,
-                  branchName: bName,
-                  shiftId: sId,
-                  shiftName: sName,
+                  userName: _userNames[r.uid] ?? r.uid,
+                  branchId: r.branchId,
+                  branchName: displayBranch,
+                  shiftId: r.shiftId,
+                  shiftName: displayShift,
                 );
                 setState(() { r.setIn(when); r.isAbsent = false; });
               }
@@ -841,43 +604,19 @@ final Set<String> holidays = (wp['holidays'] is List)
               final tod = await _pickTime(v == 'fix_out' ? 'Fix OUT time' : 'Edit OUT time');
               if (tod != null) {
                 final when = DateTime(r.date.year, r.date.month, r.date.day, tod.hour, tod.minute);
-                if (r.inAt != null && when.isBefore(r.inAt!)) {
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('OUT cannot be before IN')),
-                    );
-                  }
-                  return;
-                }
                 await _setPunch(
                   uid: r.uid,
-                  localDay: localDay,
+                  localDay: r.localDay,
                   type: 'out',
                   at: when,
-                  userName: userName,
-                  branchId: bId,
-                  branchName: bName,
-                  shiftId: sId,
-                  shiftName: sName,
+                  userName: _userNames[r.uid] ?? r.uid,
+                  branchId: r.branchId,
+                  branchName: displayBranch,
+                  shiftId: r.shiftId,
+                  shiftName: displayShift,
                 );
                 setState(() { r.setOut(when); r.isAbsent = false; });
               }
-            }
-            if (v == 'mark_off' || v == 'mark_sick' || v == 'mark_leave') {
-              final st = v == 'mark_off' ? 'off' : (v == 'mark_sick' ? 'sick' : 'leave');
-              await _setDayStatus(
-                uid: r.uid,
-                localDay: localDay,
-                statusType: st,
-                userName: userName,
-                branchId: bId,
-                branchName: bName,
-                shiftId: sId,
-                shiftName: sName,
-              );
-            }
-            if (v == 'reset_auto') {
-              await _resetDayAuto(r.uid, localDay);
             }
           },
           itemBuilder: (_) => [
@@ -885,12 +624,6 @@ final Set<String> holidays = (wp['holidays'] is List)
             if (!r.hasOut) const PopupMenuItem(value: 'fix_out', child: Text('Fix OUT…')),
             if (r.hasIn)   const PopupMenuItem(value: 'edit_in',  child: Text('Edit IN time…')),
             if (r.hasOut)  const PopupMenuItem(value: 'edit_out', child: Text('Edit OUT time…')),
-            const PopupMenuDivider(),
-            const PopupMenuItem(value: 'mark_off',  child: Text('Mark day: Off')),
-            const PopupMenuItem(value: 'mark_sick', child: Text('Mark day: Sick')),
-            const PopupMenuItem(value: 'mark_leave',child: Text('Mark day: Leave')),
-            const PopupMenuDivider(),
-            const PopupMenuItem(value: 'reset_auto', child: Text('Reset day (auto)')),
           ],
         ) : null,
       ),
@@ -898,7 +631,7 @@ final Set<String> holidays = (wp['holidays'] is List)
   }
 }
 
-// ====== موديل اليوم الواحد (للعرض فقط) ======
+// ====== موديل اليوم الواحد ======
 class _DaySummary {
   final String uid;
   final String userName;
@@ -932,8 +665,7 @@ class _DaySummary {
 
   void setIn(DateTime? t) { hasIn = true; if (t != null) inAt = t; }
   void setOut(DateTime? t){ hasOut = true; if (t != null) outAt = t; }
-
-  bool get isException => !(hasIn && hasOut) || isAbsent;
+  bool get isException => isOff || isSick || isLeave || !(hasIn && hasOut) || isAbsent;
 }
 
 // ====== Loader ======
@@ -992,7 +724,7 @@ class _ErrorBox extends StatelessWidget {
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Text(
-            'Query error:\n$error\n\nIf an index is required, select "All branches/shifts" or create the suggested index in Firestore.',
+            'Query error:\n$error\n\nIf an index is required, select "All branches" or create the index in Firestore.',
           ),
         ),
       ),
@@ -1000,7 +732,7 @@ class _ErrorBox extends StatelessWidget {
   }
 }
 
-// ====== (ج) كلاس صف التصدير ======
+// ====== صف التصدير ======
 class _ExportRow {
   _ExportRow({
     required this.dateStr,
@@ -1010,9 +742,6 @@ class _ExportRow {
     required this.shiftId,
     required this.shiftName,
     required this.workHoursPerDay,
-    required this.weekendDays,
-    required this.holidays,
-    required this.scheduledMinutes,
   });
 
   final String dateStr;
@@ -1023,8 +752,6 @@ class _ExportRow {
   final String shiftName;
 
   final double workHoursPerDay;
-  final List<int> weekendDays;
-  final Set<String> holidays;
 
   bool hasIn = false;
   bool hasOut = false;
