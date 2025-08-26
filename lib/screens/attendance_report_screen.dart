@@ -10,6 +10,9 @@ import 'package:flutter/material.dart';
 import '../utils/export.dart';       // Export.buildExcelFromSummaries
 import '../widgets/main_drawer.dart';
 
+// ==== Screen version (appears in the UI) ====
+const String _screenVersion = 'Version 2.1 • 2025-08-26 18:55';
+
 class AttendanceReportScreen extends StatefulWidget {
   const AttendanceReportScreen({
     super.key,
@@ -35,16 +38,13 @@ class AttendanceReportScreen extends StatefulWidget {
 }
 
 class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
-  // اللابل اللي يظهر فوق يمين — عدّل الرقم هنا عند كل تعديل
-  static const String _versionLabel = 'Version 2';
-
   late DateTime _from;
   late DateTime _to;
   String? _branchId;
   String? _shiftId;
   late bool _onlyEx;
 
-  // RAW diagnostic toggle
+  // RAW diagnostic toggle (نخليه شغال لحد ما نخلّص التصدير، وبعدين نشيله)
   bool _rawMode = false;
 
   // caches
@@ -78,11 +78,16 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     return '$h:$m';
   }
 
+  // (ب) HH:MM من دقائق
   String _fmtHM(int minutes) {
     final h = (minutes ~/ 60).toString().padLeft(2, '0');
     final m = (minutes % 60).toString().padLeft(2, '0');
     return '$h:$m';
   }
+
+  // helper: build DateTime from date + TimeOfDay
+  DateTime _dt(DateTime day, TimeOfDay tod) =>
+      DateTime(day.year, day.month, day.day, tod.hour, tod.minute);
 
   Future<void> _pickFrom() async {
     final d = await showDatePicker(
@@ -237,8 +242,9 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     }
   }
 
-  // ======== (ج) حساب صفوف التصدير ========
+  // ======== (ج) حساب صفوف التصدير (IN/OUT/Status + Worked/Scheduled/OT) ========
   List<_ExportRow> _computeRowsForExport(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
+    // فلترة user/branch/shift زي العرض
     final filtered = docs.where((d) {
       final m = Map<String, dynamic>.from(d.data());
       if (widget.userId?.isNotEmpty == true && m['userId'] != widget.userId) return false;
@@ -247,6 +253,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
       return true;
     }).toList();
 
+    // تجميع IN/OUT باليوم والمستخدم
     final Map<String, List<DateTime>> ins = {};
     final Map<String, List<DateTime>> outs = {};
     final Map<String, _ExportRow> byKey = {};
@@ -265,6 +272,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
         final bNm = (m['branchName'] ?? _branchNames[bId] ?? '').toString();
         final sNm = (m['shiftName']  ?? _shiftNames[sId]  ?? '').toString();
 
+        // سياسة عمل بسيطة من users (لو موجودة)
         final Map<String, dynamic> u =
             (_usersCache[uid] is Map) ? Map<String, dynamic>.from(_usersCache[uid]!) : <String, dynamic>{};
 
@@ -320,10 +328,12 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
       }
     }
 
+    // احسب worked/scheduled/ot + in/out display
     for (final e in byKey.entries) {
       final key = e.key;
       final r = e.value;
 
+      // Off/Sick/Leave → no calc
       if (r.isOff || r.isSick || r.isLeave) {
         r.workedMinutes = 0;
         r.scheduledMinutes = 0;
@@ -337,6 +347,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
       r.inAt  = inList.isNotEmpty  ? inList.first  : null;
       r.outAt = outList.isNotEmpty ? outList.last  : null;
 
+      // أزواج IN/OUT
       int i = 0, j = 0, worked = 0;
       while (i < inList.length && j < outList.length) {
         final a = inList[i], b = outList[j];
@@ -358,7 +369,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     }
 
     final rows = byKey.values.toList()
-      ..sort((a, b) => b.dateStr.compareTo(a.dateStr));
+      ..sort((a, b) => b.dateStr.compareTo(a.dateStr)); // أحدث فوق
     return rows;
   }
 
@@ -381,6 +392,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
         return;
       }
 
+      // حوّل الملخصات إلى خرائط نصية لملف الإكسيل
       final mapped = rows.map((r) {
         final displayBranch = r.branchName.isNotEmpty ? r.branchName : (_branchNames[r.branchId] ?? 'No branch');
         final displayShift  = r.shiftName.isNotEmpty  ? r.shiftName  : (_shiftNames[r.shiftId] ?? 'No shift');
@@ -440,20 +452,17 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
       appBar: AppBar(
         title: Text(widget.userName ?? 'Attendance Reports'),
         actions: [
-          // لابل الإصدار في الزاوية العليا اليمنى
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8.0),
+            padding: const EdgeInsets.only(right: 8),
             child: Center(
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 decoration: BoxDecoration(
                   color: Theme.of(context).colorScheme.surfaceVariant,
-                  borderRadius: BorderRadius.circular(14),
+                  borderRadius: BorderRadius.circular(16),
                 ),
-                child: Text(
-                  _versionLabel,
-                  style: Theme.of(context).textTheme.labelMedium,
-                ),
+                child: Text(_screenVersion,
+                    style: Theme.of(context).textTheme.labelLarge),
               ),
             ),
           ),
@@ -822,15 +831,8 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
             if (v == 'fix_in' || v == 'edit_in') {
               final tod = await _pickTime(v == 'fix_in' ? 'Fix IN time' : 'Edit IN time');
               if (tod != null) {
-                final when = DateTime(r.date.year, r.date.month, r.date.day, tod.hour, tod.minute);
-                if (r.outAt != null && when.isAfter(r.outAt!)) {
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('IN cannot be after OUT')),
-                    );
-                  }
-                  return;
-                }
+                final when = _dt(r.date, tod);
+                // لم نعد نرفض لو بعد OUT (قد يكون OUT في اليوم التالي)
                 await _setPunch(
                   uid: r.uid,
                   localDay: localDay,
@@ -845,18 +847,17 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                 setState(() { r.setIn(when); r.isAbsent = false; });
               }
             }
+
             if (v == 'fix_out' || v == 'edit_out') {
               final tod = await _pickTime(v == 'fix_out' ? 'Fix OUT time' : 'Edit OUT time');
               if (tod != null) {
-                final when = DateTime(r.date.year, r.date.month, r.date.day, tod.hour, tod.minute);
+                DateTime when = _dt(r.date, tod);
+
+                // لو OUT قبل IN → اعتبره اليوم التالي (شفت ليلي)
                 if (r.inAt != null && when.isBefore(r.inAt!)) {
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('OUT cannot be before IN')),
-                    );
-                  }
-                  return;
+                  when = when.add(const Duration(days: 1));
                 }
+
                 await _setPunch(
                   uid: r.uid,
                   localDay: localDay,
@@ -871,6 +872,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                 setState(() { r.setOut(when); r.isAbsent = false; });
               }
             }
+
             if (v == 'mark_off' || v == 'mark_sick' || v == 'mark_leave') {
               final st = v == 'mark_off' ? 'off' : (v == 'mark_sick' ? 'sick' : 'leave');
               await _setDayStatus(
