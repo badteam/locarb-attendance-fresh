@@ -239,7 +239,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   List<_ExportRow> _computeRowsForExport(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
     // فلترة user/branch/shift زي العرض
     final filtered = docs.where((d) {
-      final m = d.data();
+      final m = Map<String, dynamic>.from(d.data());
       if (widget.userId?.isNotEmpty == true && m['userId'] != widget.userId) return false;
       if (_branchId?.isNotEmpty == true && (m['branchId'] ?? '') != _branchId) return false;
       if (_shiftId?.isNotEmpty == true && (m['shiftId'] ?? '') != _shiftId) return false;
@@ -252,7 +252,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     final Map<String, _ExportRow> byKey = {};
 
     for (final d in filtered) {
-      final m = d.data();
+      final m = Map<String, dynamic>.from(d.data());
       final uid = (m['userId'] ?? '').toString();
       final day = (m['localDay'] ?? '').toString();
       if (uid.isEmpty || day.isEmpty) continue;
@@ -266,15 +266,31 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
         final sNm = (m['shiftName']  ?? _shiftNames[sId]  ?? '').toString();
 
         // سياسة عمل بسيطة من users (لو موجودة)
-        final u = _usersCache[uid] ?? {};
-        final wp = (u['workPolicy'] ?? {}) as Map<String, dynamic>;
-        final workHours = (wp['workHoursPerDay'] is num) ? (wp['workHoursPerDay'] as num).toDouble() : 9.0;
-        final weekend = (wp['weekendDays'] is List)
-            ? (wp['weekendDays'] as List).map((e) => int.tryParse(e.toString()) ?? -1).where((e) => e >= 0).toList()
-            : <int>[5, 6]; // Fri, Sat
-        final holidays = (wp['holidays'] is List)
-            ? (wp['holidays'] as List).map((e) => e.toString()).toSet()
-            : <String>{};
+       // حول user map لنسخة Dart حقيقية
+final Map<String, dynamic> u =
+    (_usersCache[uid] is Map) ? Map<String, dynamic>.from(_usersCache[uid]!) : <String, dynamic>{};
+
+// workPolicy ممكن تكون null / JsMap / أي نوع… نعالج كله
+final dynamic wpRaw = u['workPolicy'];
+final Map<String, dynamic> wp = (wpRaw is Map)
+    ? Map<String, dynamic>.from(wpRaw as Map)
+    : <String, dynamic>{};
+
+// قراءة الحقول بأمان
+final double workHours = (wp['workHoursPerDay'] is num)
+    ? (wp['workHoursPerDay'] as num).toDouble()
+    : 9.0;
+
+final List<int> weekend = (wp['weekendDays'] is List)
+    ? (wp['weekendDays'] as List)
+        .map((e) => int.tryParse(e.toString()) ?? -1)
+        .where((e) => e >= 0)
+        .toList()
+    : <int>[5, 6];
+
+final Set<String> holidays = (wp['holidays'] is List)
+    ? (wp['holidays'] as List).map((e) => e.toString()).toSet()
+    : <String>{};
 
         return _ExportRow(
           dateStr: day,
@@ -458,7 +474,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
             final full = (m['fullName'] ?? m['name'] ?? '').toString();
             final uname = (m['username'] ?? '').toString();
             _userNames[u.id] = full.isNotEmpty ? full : (uname.isNotEmpty ? uname : u.id);
-            _usersCache[u.id] = m;
+            _usersCache[u.id] = Map<String, dynamic>.from(m);
           }
         },
         onBranches: (docs) {
@@ -494,7 +510,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                   // RAW MODE
                   if (_rawMode) {
                     final raw = allDocs.where((d) {
-                      final m = d.data();
+                      final m = Map<String, dynamic>.from(d.data());
                       if (widget.userId?.isNotEmpty == true && m['userId'] != widget.userId) return false;
                       if (_branchId?.isNotEmpty == true && (m['branchId'] ?? '') != _branchId) return false;
                       if (_shiftId?.isNotEmpty  == true && (m['shiftId']  ?? '') != _shiftId ) return false;
@@ -532,7 +548,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
 
                   // فلترة user/branch/shift
                   final filtered = allDocs.where((d) {
-                    final m = d.data();
+                    final m = Map<String, dynamic>.from(d.data());
                     if (widget.userId?.isNotEmpty == true && m['userId'] != widget.userId) return false;
                     if (_branchId?.isNotEmpty == true) {
                       final bid = (m['branchId'] ?? '').toString();
@@ -552,7 +568,7 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
                   final Map<String, List<DateTime>> outTimes = {};
 
                   for (final d in filtered) {
-                    final m = d.data();
+                    final m = Map<String, dynamic>.from(d.data());
                     final uid = (m['userId'] ?? '').toString();
                     final day = (m['localDay'] ?? '').toString();
                     if (uid.isEmpty || day.isEmpty) continue;
