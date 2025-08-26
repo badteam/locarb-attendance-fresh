@@ -52,7 +52,7 @@ class Export {
     // اكتب الهيدر
     for (int c = 0; c < headers.length; c++) {
       final cell = sheet.cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: 0));
-      cell.value = TextCellValue(headers[c]);
+      cell.value = headers[c];
       cell.cellStyle = headerStyle;
     }
 
@@ -76,7 +76,7 @@ class Export {
       final rowIndex = r + 1; // لأن 0 للهيدر
       for (int c = 0; c < ordered.length; c++) {
         final cell = sheet.cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: rowIndex));
-        cell.value = TextCellValue(ordered[c]);
+        cell.value = ordered[c];
         cell.cellStyle = normalStyle;
       }
 
