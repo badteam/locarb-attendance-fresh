@@ -1,46 +1,20 @@
-// lib/utils/export.dart
 import 'dart:typed_data';
 import 'package:excel/excel.dart';
 
 class Export {
-  /// يبني ملف Excel لتقرير الحضور (الأزمنة كـ دقائق رقمية لسهولة الـ SUM)
-  /// شكل كل صف:
-  /// {
-  ///   'date': String (YYYY-MM-DD),
-  ///   'user': String,
-  ///   'branch': String,
-  ///   'shift': String,
-  ///   'status': String,
-  ///   'in': String (HH:MM أو —),
-  ///   'out': String (HH:MM أو —),
-  ///   'workedMin': int,
-  ///   'scheduledMin': int,
-  ///   'otMin': int,
-  /// }
   static Future<Uint8List> buildExcelFromSummariesV2({
     required List<Map<String, dynamic>> rows,
-    String sheetName = 'Attendance',
+    String sheetName = 'Attendance', // غير مستخدم، ممكن تسيبه أو تشيله
   }) async {
     final excel = Excel.createExcel();
 
-    // ❗️بدل rename/delete: أنشئ شيت جديد بالاسم المطلوب لو مش موجود، واكتب عليه
-    if (!excel.sheets.containsKey(sheetName)) {
-      excel.createSheet(sheetName);
-    }
-final Sheet sheet = excel['Sheet1']!;
+    // ✅ اشتغل دايمًا على Sheet1 لتجنب إنشاء تبويبات إضافية أو أخطاء API
+    final Sheet sheet = excel['Sheet1']!;
 
-    // ===== Header =====
+    // الهيدر
     final headers = <String>[
-      'Date',
-      'User',
-      'Branch',
-      'Shift',
-      'Status',
-      'IN',
-      'OUT',
-      'Worked (min)',
-      'Scheduled (min)',
-      'OT (min)',
+      'Date','User','Branch','Shift','Status','IN','OUT',
+      'Worked (min)','Scheduled (min)','OT (min)',
     ];
     sheet.appendRow(headers);
 
@@ -50,14 +24,13 @@ final Sheet sheet = excel['Sheet1']!;
       verticalAlign: VerticalAlign.Center,
     );
     for (var c = 0; c < headers.length; c++) {
-      final cell = sheet.cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: 0));
-      cell.cellStyle = headerStyle;
+      sheet.cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: 0))
+           .cellStyle = headerStyle;
     }
 
-    // ===== Data rows =====
+    // البيانات
     for (var i = 0; i < rows.length; i++) {
       final r = rows[i];
-
       final date = (r['date'] ?? '').toString();
       final user = (r['user'] ?? '').toString();
       final branch = (r['branch'] ?? '').toString();
@@ -65,69 +38,43 @@ final Sheet sheet = excel['Sheet1']!;
       final status = (r['status'] ?? '').toString();
       final inTxt = (r['in'] ?? '—').toString();
       final outTxt = (r['out'] ?? '—').toString();
-
-      final workedMin = _toInt(r['workedMin']);
+      final workedMin    = _toInt(r['workedMin']);
       final scheduledMin = _toInt(r['scheduledMin']);
-      final otMin = _toInt(r['otMin']);
+      final otMin        = _toInt(r['otMin']);
 
-      sheet.appendRow([
-        date,
-        user,
-        branch,
-        shift,
-        status,
-        inTxt,
-        outTxt,
-        '', // worked (min) numeric below
-        '', // scheduled (min)
-        '', // ot (min)
-      ]);
+      sheet.appendRow([date,user,branch,shift,status,inTxt,outTxt,'','','']);
+      final rowIndex = i + 1; // 0 للهيدر
 
-      final rowIndex = i + 1; // 0 = header
-
-      sheet
-          .cell(CellIndex.indexByColumnRow(columnIndex: 7, rowIndex: rowIndex))
-          .value = workedMin;
-      sheet
-          .cell(CellIndex.indexByColumnRow(columnIndex: 8, rowIndex: rowIndex))
-          .value = scheduledMin;
-      sheet
-          .cell(CellIndex.indexByColumnRow(columnIndex: 9, rowIndex: rowIndex))
-          .value = otMin;
+      sheet.cell(CellIndex.indexByColumnRow(columnIndex: 7, rowIndex: rowIndex)).value = workedMin;
+      sheet.cell(CellIndex.indexByColumnRow(columnIndex: 8, rowIndex: rowIndex)).value = scheduledMin;
+      sheet.cell(CellIndex.indexByColumnRow(columnIndex: 9, rowIndex: rowIndex)).value = otMin;
     }
 
-    // ===== Totals =====
+    // Totals
     final lastDataRow = rows.length;
     sheet.appendRow(List.filled(headers.length, '')); // spacer
     sheet.appendRow(List.filled(headers.length, '')); // totals row
     final totalsRowIndex = lastDataRow + 2;
 
-    final totalsLabelCell = sheet.cell(
-      CellIndex.indexByColumnRow(columnIndex: 0, rowIndex: totalsRowIndex),
-    );
-    totalsLabelCell.value = 'Totals';
-    totalsLabelCell.cellStyle = CellStyle(bold: true);
+    sheet.cell(CellIndex.indexByColumnRow(columnIndex: 0, rowIndex: totalsRowIndex))
+         ..value = 'Totals'
+         ..cellStyle = CellStyle(bold: true);
 
-    String colName(int colIndexZeroBased) => String.fromCharCode(65 + colIndexZeroBased);
-    String sumRef(int colIndexZeroBased) =>
-        'SUM(${colName(colIndexZeroBased)}2:${colName(colIndexZeroBased)}${lastDataRow + 1})';
+    String colName(int i) => String.fromCharCode(65 + i);
+    String sumRef(int col) => 'SUM(${colName(col)}2:${colName(col)}${lastDataRow + 1})';
 
     for (final col in [7, 8, 9]) {
-      final cell = sheet.cell(
-        CellIndex.indexByColumnRow(columnIndex: col, rowIndex: totalsRowIndex),
-      );
-      cell.setFormula(sumRef(col));
-      cell.cellStyle = CellStyle(bold: true);
+      sheet.cell(CellIndex.indexByColumnRow(columnIndex: col, rowIndex: totalsRowIndex))
+           ..setFormula(sumRef(col))
+           ..cellStyle = CellStyle(bold: true);
     }
 
-    // ===== Autofit (أحيانًا بتكسر في نسخ معينة) — نخليها داخل try/catch
+    // AutoFit (لو المكتبة عندها مشكلة، نتجاهل)
     try {
       for (var c = 0; c < headers.length; c++) {
         sheet.setColAutoFit(c);
       }
-    } catch (_) {
-      // تجاهل أي خطأ من المكتبة
-    }
+    } catch (_) {}
 
     final bytes = excel.encode()!;
     return Uint8List.fromList(bytes);
