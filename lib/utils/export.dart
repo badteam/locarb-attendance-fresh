@@ -1,95 +1,99 @@
-import 'dart:typed_data';
+// lib/utils/export.dart
 import 'package:excel/excel.dart';
 
 class Export {
-  static Future<Uint8List> buildExcelFromSummariesV2({
-    required List<Map<String, dynamic>> rows,
-    String sheetName = 'Attendance', // غير مستخدم، ممكن تسيبه أو تشيله
+  /// rows: قائمة من الخرائط بالمفاتيح:
+  /// date, user, branch, shift, status, in, out, worked, scheduled, ot
+  static Future<List<int>> buildExcelFromSummaries({
+    required List<Map<String, String>> rows,
+    String sheetName = 'Attendance',
   }) async {
-    final excel = Excel.createExcel();
+    final excel = Excel.createExcel(); // ينشئ Sheet1 افتراضياً
+    // هنكتب على الشيت الافتراضي علشان ما يحصلش شيت فاضي
+    final Sheet sheet = excel['Sheet1'];
 
-    // ✅ اشتغل دايمًا على Sheet1 لتجنب إنشاء تبويبات إضافية أو أخطاء API
-    final Sheet sheet = excel['Sheet1']!;
+    // ممكن نحاول تعيين الاسم الافتراضي (لو مدعوم)، لو مش مدعوم مش مشكلة
+    try {
+      excel.setDefaultSheet('Sheet1');
+      // بعض الإصدارات تدعم rename، البعض لا — نخليها داخل try
+      if (sheetName != 'Sheet1') {
+        excel.rename('Sheet1', sheetName);
+      }
+    } catch (_) {
+      // تجاهل لو الـ API مش موجودة — الأهم المحتوى نفسه
+    }
 
-    // الهيدر
-    final headers = <String>[
-      'Date','User','Branch','Shift','Status','IN','OUT',
-      'Worked (min)','Scheduled (min)','OT (min)',
+    // الصف العلوي: عناوين الأعمدة
+    final headers = const [
+      'Date',
+      'User',
+      'Branch',
+      'Shift',
+      'Status',
+      'IN',
+      'OUT',
+      'Worked',
+      'Scheduled',
+      'OT',
     ];
     sheet.appendRow(headers);
 
-    final headerStyle = CellStyle(
-      bold: true,
-      horizontalAlign: HorizontalAlign.Center,
-      verticalAlign: VerticalAlign.Center,
-    );
-    for (var c = 0; c < headers.length; c++) {
-      sheet.cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: 0))
-           .cellStyle = headerStyle;
+    // تنسيق العناوين (Bold فقط، بدون numberFormat)
+    try {
+      for (int c = 0; c < headers.length; c++) {
+        final cell = sheet
+            .cell(CellIndex.indexByColumnRow(columnIndex: c, rowIndex: 0));
+        cell.cellStyle = CellStyle(bold: true);
+      }
+    } catch (_) {
+      // بعض الإصدارات ممكن تتصرف بشكل مختلف — مش مشكلة
     }
 
     // البيانات
-    for (var i = 0; i < rows.length; i++) {
-      final r = rows[i];
-      final date = (r['date'] ?? '').toString();
-      final user = (r['user'] ?? '').toString();
-      final branch = (r['branch'] ?? '').toString();
-      final shift = (r['shift'] ?? '').toString();
-      final status = (r['status'] ?? '').toString();
-      final inTxt = (r['in'] ?? '—').toString();
-      final outTxt = (r['out'] ?? '—').toString();
-      final workedMin    = _toInt(r['workedMin']);
-      final scheduledMin = _toInt(r['scheduledMin']);
-      final otMin        = _toInt(r['otMin']);
-
-      sheet.appendRow([date,user,branch,shift,status,inTxt,outTxt,'','','']);
-      final rowIndex = i + 1; // 0 للهيدر
-
-      sheet.cell(CellIndex.indexByColumnRow(columnIndex: 7, rowIndex: rowIndex)).value = workedMin;
-      sheet.cell(CellIndex.indexByColumnRow(columnIndex: 8, rowIndex: rowIndex)).value = scheduledMin;
-      sheet.cell(CellIndex.indexByColumnRow(columnIndex: 9, rowIndex: rowIndex)).value = otMin;
+    for (final r in rows) {
+      sheet.appendRow([
+        r['date'] ?? '',
+        r['user'] ?? '',
+        r['branch'] ?? '',
+        r['shift'] ?? '',
+        r['status'] ?? '',
+        r['in'] ?? '',
+        r['out'] ?? '',
+        r['worked'] ?? '',
+        r['scheduled'] ?? '',
+        r['ot'] ?? '',
+      ]);
     }
 
-    // Totals
-    final lastDataRow = rows.length;
-    sheet.appendRow(List.filled(headers.length, '')); // spacer
-    sheet.appendRow(List.filled(headers.length, '')); // totals row
-    final totalsRowIndex = lastDataRow + 2;
-
-    sheet.cell(CellIndex.indexByColumnRow(columnIndex: 0, rowIndex: totalsRowIndex))
-         ..value = 'Totals'
-         ..cellStyle = CellStyle(bold: true);
-
-    String colName(int i) => String.fromCharCode(65 + i);
-    String sumRef(int col) => 'SUM(${colName(col)}2:${colName(col)}${lastDataRow + 1})';
-
-    for (final col in [7, 8, 9]) {
-      sheet.cell(CellIndex.indexByColumnRow(columnIndex: col, rowIndex: totalsRowIndex))
-           ..setFormula(sumRef(col))
-           ..cellStyle = CellStyle(bold: true);
-    }
-
-    // AutoFit (لو المكتبة عندها مشكلة، نتجاهل)
+    // تحسين عرض بسيط: عرض أعمدة
     try {
-      for (var c = 0; c < headers.length; c++) {
-        sheet.setColAutoFit(c);
-      }
-    } catch (_) {}
-
-    final bytes = excel.encode()!;
-    return Uint8List.fromList(bytes);
-  }
-
-  static int _toInt(dynamic v) {
-    if (v is int) return v;
-    if (v is double) return v.round();
-    if (v is num) return v.toInt();
-    if (v is String) {
-      final n = int.tryParse(v.trim());
-      if (n != null) return n;
-      final d = double.tryParse(v.trim());
-      if (d != null) return d.round();
+      final widths = <int, double>{
+        0: 14, // Date
+        1: 22, // User
+        2: 18, // Branch
+        3: 16, // Shift
+        4: 14, // Status
+        5: 8,  // IN
+        6: 8,  // OUT
+        7: 10, // Worked
+        8: 11, // Scheduled
+        9: 8,  // OT
+      };
+      widths.forEach((col, w) {
+        sheet.setColWidth(col, w);
+      });
+    } catch (_) {
+      // لو غير مدعوم، نتجاهل
     }
-    return 0;
+
+    final bytes = excel.encode();
+    return bytes ?? <int>[];
   }
+
+  /// لو حاب تحافظ على أسماء دوال قديمة:
+  static Future<List<int>> buildExcelFromSummariesV2({
+    required List<Map<String, String>> rows,
+    String sheetName = 'Attendance',
+  }) =>
+      buildExcelFromSummaries(rows: rows, sheetName: sheetName);
 }
