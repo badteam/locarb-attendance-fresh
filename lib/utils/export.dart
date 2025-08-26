@@ -3,8 +3,8 @@ import 'dart:typed_data';
 import 'package:excel/excel.dart';
 
 class Export {
-  /// يبني ملف Excel لتقرير الحضور.
-  /// المتوقع في كل عنصر من rows:
+  /// يبني ملف Excel لتقرير الحضور (الأزمنة كـ دقائق رقمية لسهولة الـ SUM)
+  /// شكل كل صف:
   /// {
   ///   'date': String (YYYY-MM-DD),
   ///   'user': String,
@@ -13,20 +13,21 @@ class Export {
   ///   'status': String,
   ///   'in': String (HH:MM أو —),
   ///   'out': String (HH:MM أو —),
-  ///   'workedMin': int (دقائق),
-  ///   'scheduledMin': int (دقائق),
-  ///   'otMin': int (دقائق),
+  ///   'workedMin': int,
+  ///   'scheduledMin': int,
+  ///   'otMin': int,
   /// }
   static Future<Uint8List> buildExcelFromSummariesV2({
     required List<Map<String, dynamic>> rows,
     String sheetName = 'Attendance',
   }) async {
     final excel = Excel.createExcel();
-    // تأكد إن الشيت موجود بالاسم المحدد (Excel package بتنشئ شيت Default اسمها Sheet1)
+
+    // ❗️بدل rename/delete: أنشئ شيت جديد بالاسم المطلوب لو مش موجود، واكتب عليه
     if (!excel.sheets.containsKey(sheetName)) {
-      excel.rename('Sheet1', sheetName);
+      excel.createSheet(sheetName);
     }
-    final sheet = excel[sheetName];
+    final Sheet sheet = excel[sheetName]!;
 
     // ===== Header =====
     final headers = <String>[
@@ -43,7 +44,6 @@ class Export {
     ];
     sheet.appendRow(headers);
 
-    // تنسيق رأس الجدول
     final headerStyle = CellStyle(
       bold: true,
       horizontalAlign: HorizontalAlign.Center,
@@ -54,7 +54,7 @@ class Export {
       cell.cellStyle = headerStyle;
     }
 
-    // ===== Rows =====
+    // ===== Data rows =====
     for (var i = 0; i < rows.length; i++) {
       final r = rows[i];
 
@@ -66,12 +66,10 @@ class Export {
       final inTxt = (r['in'] ?? '—').toString();
       final outTxt = (r['out'] ?? '—').toString();
 
-      // الدقائق كأرقام (int) عشان تقدر تعمل SUM في الإكسيل
       final workedMin = _toInt(r['workedMin']);
       final scheduledMin = _toInt(r['scheduledMin']);
       final otMin = _toInt(r['otMin']);
 
-      // أبند الصف (هنكتب الأرقام بعد appendRow مباشرة)
       sheet.appendRow([
         date,
         user,
@@ -80,14 +78,13 @@ class Export {
         status,
         inTxt,
         outTxt,
-        '', // Worked (min)
-        '', // Scheduled (min)
-        '', // OT (min)
+        '', // worked (min) numeric below
+        '', // scheduled (min)
+        '', // ot (min)
       ]);
 
-      final rowIndex = i + 1; // 0 للهيدر، إذن أول صف بيانات = 1
+      final rowIndex = i + 1; // 0 = header
 
-      // كتابة القيم الرقمية في الأعمدة: 7,8,9 (0-based: 7..9)
       sheet
           .cell(CellIndex.indexByColumnRow(columnIndex: 7, rowIndex: rowIndex))
           .value = workedMin;
@@ -100,45 +97,42 @@ class Export {
     }
 
     // ===== Totals =====
-    final lastDataRow = rows.length;       // آخر صف بيانات اندكسه = rows.length (لأن 0 للهيدر)
-    final totalsRowIndex = lastDataRow + 2; // سطر فاصل + سطر توتال
+    final lastDataRow = rows.length;
+    sheet.appendRow(List.filled(headers.length, '')); // spacer
+    sheet.appendRow(List.filled(headers.length, '')); // totals row
+    final totalsRowIndex = lastDataRow + 2;
 
-    // سطر فاصل
-    sheet.appendRow(List.filled(headers.length, ''));
-    // سطر التوتال
-    sheet.appendRow(List.filled(headers.length, ''));
-
-    // خانة "Totals" في أول عمود A
     final totalsLabelCell = sheet.cell(
       CellIndex.indexByColumnRow(columnIndex: 0, rowIndex: totalsRowIndex),
     );
     totalsLabelCell.value = 'Totals';
     totalsLabelCell.cellStyle = CellStyle(bold: true);
 
-    // دوال SUM للأعمدة H, I, J (0-based: 7, 8, 9)
     String colName(int colIndexZeroBased) => String.fromCharCode(65 + colIndexZeroBased);
     String sumRef(int colIndexZeroBased) =>
         'SUM(${colName(colIndexZeroBased)}2:${colName(colIndexZeroBased)}${lastDataRow + 1})';
 
     for (final col in [7, 8, 9]) {
-      final cell = sheet.cell(CellIndex.indexByColumnRow(
-        columnIndex: col,
-        rowIndex: totalsRowIndex,
-      ));
+      final cell = sheet.cell(
+        CellIndex.indexByColumnRow(columnIndex: col, rowIndex: totalsRowIndex),
+      );
       cell.setFormula(sumRef(col));
       cell.cellStyle = CellStyle(bold: true);
     }
 
-    // ===== AutoFit للأعمدة =====
-    for (var c = 0; c < headers.length; c++) {
-      sheet.setColAutoFit(c);
+    // ===== Autofit (أحيانًا بتكسر في نسخ معينة) — نخليها داخل try/catch
+    try {
+      for (var c = 0; c < headers.length; c++) {
+        sheet.setColAutoFit(c);
+      }
+    } catch (_) {
+      // تجاهل أي خطأ من المكتبة
     }
 
     final bytes = excel.encode()!;
     return Uint8List.fromList(bytes);
   }
 
-  // ===== Helpers =====
   static int _toInt(dynamic v) {
     if (v is int) return v;
     if (v is double) return v.round();
