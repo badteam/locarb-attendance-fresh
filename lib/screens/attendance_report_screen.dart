@@ -1,6 +1,7 @@
 // lib/screens/attendance_report_screen.dart
 import 'dart:typed_data';
 import 'dart:html' as html;
+import 'dart:convert'; // لو مش موجود مش مشكلة
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -71,7 +72,13 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     final m = dt.minute.toString().padLeft(2, '0');
     return '$h:$m';
   }
+String _fmtHM(int minutes) {
+  final h = (minutes ~/ 60).toString().padLeft(2, '0');
+  final m = (minutes % 60).toString().padLeft(2, '0');
+  return '$h:$m';
+}
 
+  
   Future<void> _pickFrom() async {
     final d = await showDatePicker(
       context: context,
@@ -226,67 +233,226 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
   }
 
   // ======== Export Excel (القديم شغال) ========
-  Future<void> _exportExcel() async {
-    try {
-      Query<Map<String, dynamic>> q = FirebaseFirestore.instance
-          .collection('attendance')
-          .where('localDay', isGreaterThanOrEqualTo: _fmtDay(_from))
-          .where('localDay', isLessThanOrEqualTo: _fmtDay(_to))
-          .orderBy('localDay', descending: false);
+Future<void> _exportExcel() async {
+  try {
+    final snap = await FirebaseFirestore.instance
+        .collection('attendance')
+        .where('localDay', isGreaterThanOrEqualTo: _fmtDay(_from))
+        .where('localDay', isLessThanOrEqualTo: _fmtDay(_to))
+        .orderBy('localDay', descending: false)
+        .get();
 
-      final snap = await q.get();
-      var docs = snap.docs;
-
-      if (widget.userId?.isNotEmpty == true) {
-        docs = docs.where((d) => (d.data()['userId'] ?? '') == widget.userId).toList();
-      }
-      if (_branchId?.isNotEmpty == true) {
-        docs = docs.where((d) => (d.data()['branchId'] ?? '') == _branchId).toList();
-      }
-      if (_shiftId?.isNotEmpty == true) {
-        docs = docs.where((d) => (d.data()['shiftId'] ?? '') == _shiftId).toList();
-      }
-      if (docs.isEmpty) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No records to export for this range')));
-        return;
-      }
-
-      final uidSet = <String>{};
-      for (final d in docs) {
-        final uid = (d.data()['userId'] ?? '').toString();
-        if (uid.isNotEmpty) uidSet.add(uid);
-      }
-      final names = Map<String, String>.from(_userNames);
-      for (final uid in uidSet) {
-        names.putIfAbsent(uid, () => uid);
-      }
-
-      final bytes = await Export.buildPivotExcelBytes(
-        attendanceDocs: docs,
-        from: _from,
-        to: _to,
-        userNames: names,
-      );
-      final filename = 'attendance_${_fmtDay(_from)}_${_fmtDay(_to)}.xlsx';
-
-      if (kIsWeb) {
-        final blob = html.Blob([Uint8List.fromList(bytes)]);
-        final url = html.Url.createObjectUrlFromBlob(blob);
-        final a = html.AnchorElement(href: url)..download = filename;
-        html.document.body!.children.add(a);
-        a.click();
-        html.document.body!.children.remove(a);
-        html.Url.revokeObjectUrl(url);
-      } else {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Excel generated.')));
-      }
-    } catch (e) {
+    final rows = _computeRowsForExport(snap.docs);
+    if (rows.isEmpty) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Export failed: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No records to export for this range')),
+      );
+      return;
+    }
+
+    // حوّل الملخصات إلى خرائط نصية لملف الإكسيل
+    final mapped = rows.map((r) {
+      final displayBranch = r.branchName.isNotEmpty ? r.branchName : (_branchNames[r.branchId] ?? 'No branch');
+      final displayShift  = r.shiftName.isNotEmpty  ? r.shiftName  : (_shiftNames[r.shiftId] ?? 'No shift');
+      return <String, String>{
+        'date': r.dateStr,
+        'user': r.user,
+        'branch': displayBranch,
+        'shift': displayShift,
+        'status': r.status,
+        'in': r.inAt == null ? '—' : '${r.inAt!.hour.toString().padLeft(2, '0')}:${r.inAt!.minute.toString().padLeft(2, '0')}',
+        'out': r.outAt == null ? '—' : '${r.outAt!.hour.toString().padLeft(2, '0')}:${r.outAt!.minute.toString().padLeft(2, '0')}',
+        'worked': _fmtHM(r.workedMinutes),
+        'scheduled': _fmtHM(r.scheduledMinutes),
+        'ot': _fmtHM(r.overtimeMinutes),
+      };
+    }).toList();
+
+    final bytes = await Export.buildExcelFromSummaries(rows: mapped);
+    final filename = 'attendance_${_fmtDay(_from)}_${_fmtDay(_to)}.xlsx';
+
+    // تنزيل (ويب)
+    final blob = html.Blob([Uint8List.fromList(bytes)]);
+    final url = html.Url.createObjectUrlFromBlob(blob);
+    final a = html.AnchorElement(href: url)..download = filename;
+    html.document.body!.children.add(a);
+    a.click();
+    html.document.body!.children.remove(a);
+    html.Url.revokeObjectUrl(url);
+  } catch (e) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Export failed: $e')));
+  }
+}
+
+  List<_ExportRow> _computeRowsForExport(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
+  // فلترة user/branch/shift زي العرض
+  final filtered = docs.where((d) {
+    final m = d.data();
+    if (widget.userId?.isNotEmpty == true && m['userId'] != widget.userId) return false;
+    if (_branchId?.isNotEmpty == true && (m['branchId'] ?? '') != _branchId) return false;
+    if (_shiftId?.isNotEmpty == true && (m['shiftId'] ?? '') != _shiftId) return false;
+    return true;
+  }).toList();
+
+  // تجميع IN/OUT باليوم والمستخدم
+  final Map<String, List<DateTime>> ins = {};
+  final Map<String, List<DateTime>> outs = {};
+  final Map<String, _ExportRow> byKey = {};
+
+  for (final d in filtered) {
+    final m = d.data();
+    final uid = (m['userId'] ?? '').toString();
+    final day = (m['localDay'] ?? '').toString();
+    if (uid.isEmpty || day.isEmpty) continue;
+
+    final key = '$uid|$day';
+    byKey.putIfAbsent(key, () {
+      final displayName = (_userNames[uid] ?? uid);
+      final bId = (m['branchId'] ?? '').toString();
+      final sId = (m['shiftId']  ?? '').toString();
+      final bNm = (m['branchName'] ?? _branchNames[bId] ?? '').toString();
+      final sNm = (m['shiftName']  ?? _shiftNames[sId]  ?? '').toString();
+
+      // سياسة عمل بسيطة: 9 ساعات افتراضيًا لو مفيش WorkPolicy في usersCache
+      final u = _usersCache[uid] ?? {};
+      final wp = (u['workPolicy'] ?? {}) as Map<String, dynamic>;
+      final workHours = (wp['workHoursPerDay'] is num) ? (wp['workHoursPerDay'] as num).toDouble() : 9.0;
+      final weekend = (wp['weekendDays'] is List)
+          ? (wp['weekendDays'] as List).map((e) => int.tryParse(e.toString()) ?? -1).where((e) => e >= 0).toList()
+          : <int>[5, 6];
+      final holidays = (wp['holidays'] is List)
+          ? (wp['holidays'] as List).map((e) => e.toString()).toSet()
+          : <String>{};
+
+      return _ExportRow(
+        dateStr: day,
+        user: displayName,
+        branchId: bId, branchName: bNm,
+        shiftId: sId, shiftName: sNm,
+        scheduledMinutes: 0,
+        workHoursPerDay: workHours,
+        weekendDays: weekend,
+        holidays: holidays,
+      );
+    });
+
+    final typ = (m['type'] ?? '').toString();
+    final at  = m['at'] is Timestamp ? (m['at'] as Timestamp).toDate() : null;
+
+    if (typ == 'in' && at != null) {
+      ins.putIfAbsent(key, () => []).add(at);
+      byKey[key]!.hasIn = true;
+    } else if (typ == 'out' && at != null) {
+      outs.putIfAbsent(key, () => []).add(at);
+      byKey[key]!.hasOut = true;
+    } else if (typ == 'absent') {
+      byKey[key]!.isAbsent = true;
+    } else if (typ == 'off') {
+      byKey[key]!.isOff = true;
+    } else if (typ == 'sick') {
+      byKey[key]!.isSick = true;
+    } else if (typ == 'leave') {
+      byKey[key]!.isLeave = true;
     }
   }
+
+  // احسب worked/scheduled/ot + in/out display
+  for (final e in byKey.entries) {
+    final key = e.key;
+    final r = e.value;
+
+    // Off/Sick/Leave → no calc
+    if (r.isOff || r.isSick || r.isLeave) {
+      r.workedMinutes = 0;
+      r.scheduledMinutes = 0;
+      r.inAt = null; r.outAt = null;
+      continue;
+    }
+
+    final inList = (ins[key] ?? [])..sort();
+    final outList = (outs[key] ?? [])..sort();
+
+    r.inAt  = inList.isNotEmpty  ? inList.first  : null;
+    r.outAt = outList.isNotEmpty ? outList.last  : null;
+
+    // زوج IN/OUT
+    int i = 0, j = 0, worked = 0;
+    while (i < inList.length && j < outList.length) {
+      final a = inList[i], b = outList[j];
+      if (b.isBefore(a)) { j++; continue; }
+      worked += b.difference(a).inMinutes;
+      i++; j++;
+    }
+    r.workedMinutes = worked;
+
+    final dateObj = DateTime.parse(r.dateStr);
+    final weekday = dateObj.weekday; // Mon=1..Sun=7
+    final isWeekend = r.weekendDays.contains(weekday);
+    final isHoliday = r.holidays.contains(r.dateStr);
+    r.scheduledMinutes = (isWeekend || isHoliday) ? 0 : (r.workHoursPerDay * 60).round();
+
+    r.overtimeMinutes = worked > r.scheduledMinutes ? worked - r.scheduledMinutes : 0;
+
+    if (r.hasIn || r.hasOut) r.isAbsent = false;
+  }
+
+  final rows = byKey.values.toList()
+    ..sort((a, b) => b.dateStr.compareTo(a.dateStr)); // أحدث فوق
+  return rows;
+}
+
+class _ExportRow {
+  _ExportRow({
+    required this.dateStr,
+    required this.user,
+    required this.branchId,
+    required this.branchName,
+    required this.shiftId,
+    required this.shiftName,
+    required this.workHoursPerDay,
+    required this.weekendDays,
+    required this.holidays,
+    required this.scheduledMinutes,
+  });
+
+  final String dateStr;
+  final String user;
+  final String branchId;
+  final String branchName;
+  final String shiftId;
+  final String shiftName;
+
+  final double workHoursPerDay;
+  final List<int> weekendDays;
+  final Set<String> holidays;
+
+  bool hasIn = false;
+  bool hasOut = false;
+  bool isAbsent = false;
+  bool isOff = false;
+  bool isSick = false;
+  bool isLeave = false;
+
+  DateTime? inAt;
+  DateTime? outAt;
+
+  int workedMinutes = 0;
+  int scheduledMinutes = 0;
+  int overtimeMinutes = 0;
+
+  String get status =>
+      isOff ? 'Off'
+    : isSick ? 'Sick'
+    : isLeave ? 'Leave'
+    : (hasIn && hasOut) ? 'Present'
+    : (hasIn && !hasOut) ? 'Missing OUT'
+    : (!hasIn && hasOut) ? 'Missing IN'
+    : isAbsent ? 'Absent'
+    : 'Absent';
+}
+
 
   @override
   Widget build(BuildContext context) {
