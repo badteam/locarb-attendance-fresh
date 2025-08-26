@@ -35,13 +35,16 @@ class AttendanceReportScreen extends StatefulWidget {
 }
 
 class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
+  // اللابل اللي يظهر فوق يمين — عدّل الرقم هنا عند كل تعديل
+  static const String _versionLabel = 'Version 2';
+
   late DateTime _from;
   late DateTime _to;
   String? _branchId;
   String? _shiftId;
   late bool _onlyEx;
 
-  // RAW diagnostic toggle (نخليه شغال لحد ما نخلّص التصدير، وبعدين نشيله)
+  // RAW diagnostic toggle
   bool _rawMode = false;
 
   // caches
@@ -75,7 +78,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     return '$h:$m';
   }
 
-  // (ب) HH:MM من دقائق
   String _fmtHM(int minutes) {
     final h = (minutes ~/ 60).toString().padLeft(2, '0');
     final m = (minutes % 60).toString().padLeft(2, '0');
@@ -235,9 +237,8 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
     }
   }
 
-  // ======== (ج) حساب صفوف التصدير (IN/OUT/Status + Worked/Scheduled/OT) ========
+  // ======== (ج) حساب صفوف التصدير ========
   List<_ExportRow> _computeRowsForExport(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
-    // فلترة user/branch/shift زي العرض
     final filtered = docs.where((d) {
       final m = Map<String, dynamic>.from(d.data());
       if (widget.userId?.isNotEmpty == true && m['userId'] != widget.userId) return false;
@@ -246,7 +247,6 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
       return true;
     }).toList();
 
-    // تجميع IN/OUT باليوم والمستخدم
     final Map<String, List<DateTime>> ins = {};
     final Map<String, List<DateTime>> outs = {};
     final Map<String, _ExportRow> byKey = {};
@@ -265,32 +265,28 @@ class _AttendanceReportScreenState extends State<AttendanceReportScreen> {
         final bNm = (m['branchName'] ?? _branchNames[bId] ?? '').toString();
         final sNm = (m['shiftName']  ?? _shiftNames[sId]  ?? '').toString();
 
-        // سياسة عمل بسيطة من users (لو موجودة)
-       // حول user map لنسخة Dart حقيقية
-final Map<String, dynamic> u =
-    (_usersCache[uid] is Map) ? Map<String, dynamic>.from(_usersCache[uid]!) : <String, dynamic>{};
+        final Map<String, dynamic> u =
+            (_usersCache[uid] is Map) ? Map<String, dynamic>.from(_usersCache[uid]!) : <String, dynamic>{};
 
-// workPolicy ممكن تكون null / JsMap / أي نوع… نعالج كله
-final dynamic wpRaw = u['workPolicy'];
-final Map<String, dynamic> wp = (wpRaw is Map)
-    ? Map<String, dynamic>.from(wpRaw as Map)
-    : <String, dynamic>{};
+        final dynamic wpRaw = u['workPolicy'];
+        final Map<String, dynamic> wp = (wpRaw is Map)
+            ? Map<String, dynamic>.from(wpRaw as Map)
+            : <String, dynamic>{};
 
-// قراءة الحقول بأمان
-final double workHours = (wp['workHoursPerDay'] is num)
-    ? (wp['workHoursPerDay'] as num).toDouble()
-    : 9.0;
+        final double workHours = (wp['workHoursPerDay'] is num)
+            ? (wp['workHoursPerDay'] as num).toDouble()
+            : 9.0;
 
-final List<int> weekend = (wp['weekendDays'] is List)
-    ? (wp['weekendDays'] as List)
-        .map((e) => int.tryParse(e.toString()) ?? -1)
-        .where((e) => e >= 0)
-        .toList()
-    : <int>[5, 6];
+        final List<int> weekend = (wp['weekendDays'] is List)
+            ? (wp['weekendDays'] as List)
+                .map((e) => int.tryParse(e.toString()) ?? -1)
+                .where((e) => e >= 0)
+                .toList()
+            : <int>[5, 6];
 
-final Set<String> holidays = (wp['holidays'] is List)
-    ? (wp['holidays'] as List).map((e) => e.toString()).toSet()
-    : <String>{};
+        final Set<String> holidays = (wp['holidays'] is List)
+            ? (wp['holidays'] as List).map((e) => e.toString()).toSet()
+            : <String>{};
 
         return _ExportRow(
           dateStr: day,
@@ -324,12 +320,10 @@ final Set<String> holidays = (wp['holidays'] is List)
       }
     }
 
-    // احسب worked/scheduled/ot + in/out display
     for (final e in byKey.entries) {
       final key = e.key;
       final r = e.value;
 
-      // Off/Sick/Leave → no calc
       if (r.isOff || r.isSick || r.isLeave) {
         r.workedMinutes = 0;
         r.scheduledMinutes = 0;
@@ -343,7 +337,6 @@ final Set<String> holidays = (wp['holidays'] is List)
       r.inAt  = inList.isNotEmpty  ? inList.first  : null;
       r.outAt = outList.isNotEmpty ? outList.last  : null;
 
-      // أزواج IN/OUT
       int i = 0, j = 0, worked = 0;
       while (i < inList.length && j < outList.length) {
         final a = inList[i], b = outList[j];
@@ -365,7 +358,7 @@ final Set<String> holidays = (wp['holidays'] is List)
     }
 
     final rows = byKey.values.toList()
-      ..sort((a, b) => b.dateStr.compareTo(a.dateStr)); // أحدث فوق
+      ..sort((a, b) => b.dateStr.compareTo(a.dateStr));
     return rows;
   }
 
@@ -388,7 +381,6 @@ final Set<String> holidays = (wp['holidays'] is List)
         return;
       }
 
-      // حوّل الملخصات إلى خرائط نصية لملف الإكسيل
       final mapped = rows.map((r) {
         final displayBranch = r.branchName.isNotEmpty ? r.branchName : (_branchNames[r.branchId] ?? 'No branch');
         final displayShift  = r.shiftName.isNotEmpty  ? r.shiftName  : (_shiftNames[r.shiftId] ?? 'No shift');
@@ -448,7 +440,23 @@ final Set<String> holidays = (wp['holidays'] is List)
       appBar: AppBar(
         title: Text(widget.userName ?? 'Attendance Reports'),
         actions: [
-          // RAW toggle (نقدر نشيله بعد ما نتاكد التصدير تمام)
+          // لابل الإصدار في الزاوية العليا اليمنى
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8.0),
+            child: Center(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceVariant,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Text(
+                  _versionLabel,
+                  style: Theme.of(context).textTheme.labelMedium,
+                ),
+              ),
+            ),
+          ),
           IconButton(
             tooltip: _rawMode ? 'Show grouped' : 'Show RAW',
             onPressed: () => setState(() => _rawMode = !_rawMode),
