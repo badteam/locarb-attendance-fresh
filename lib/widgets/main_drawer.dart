@@ -6,6 +6,8 @@ import '../screens/dashboard_screen.dart';
 import '../screens/attendance_report_screen.dart';
 import '../screens/admin_users_screen.dart';
 import '../screens/branches_shifts_screen.dart';
+import '../screens/payroll_loan_assistant.dart';
+
 
 // Admin tools (اتأكد إن الملفات دي موجودة)
 import '../admin/fix_missing_shift_for_statuses.dart';
@@ -108,6 +110,7 @@ class _MainDrawerState extends State<MainDrawer> {
                     subtitle: const Text('Locations, geofence & shifts'),
                     onTap: () => _open(const BranchesShiftsScreen()),
                   ),
+                  
 
                   _section('Admin Tools'),
                   ListTile(
@@ -122,6 +125,12 @@ class _MainDrawerState extends State<MainDrawer> {
                     subtitle: const Text('Convert old branchId/shiftId to real doc IDs'),
                     onTap: () => _open(const FixIdsScreen()),
                   ),
+                  ListTile(
+  leading: const Icon(Icons.account_balance_wallet_outlined),
+  title: const Text('Payroll • Loan Assistant'),
+  subtitle: const Text('Set monthly loan installments into payroll'),
+  onTap: () => _open(const PayrollLoanAssistantScreen()),
+),
 
                   _section('Settings'),
                   SwitchListTile(
