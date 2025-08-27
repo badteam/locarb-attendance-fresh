@@ -1,7 +1,7 @@
 // lib/screens/payroll_center_screen.dart
-import 'package:cloud_firestore/cloud_firestore.dart';
+// Payroll Center — v1.0 — 2025-08-27  (tabs, monthly items, loans auto-calc, leave balances, tooltips)
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 class PayrollCenterScreen extends StatefulWidget {
   const PayrollCenterScreen({super.key});
@@ -10,666 +10,267 @@ class PayrollCenterScreen extends StatefulWidget {
   State<PayrollCenterScreen> createState() => _PayrollCenterScreenState();
 }
 
-class _PayrollCenterScreenState extends State<PayrollCenterScreen>
-    with SingleTickerProviderStateMixin {
-  // ====== Version badge ======
-  static const String _versionBadge = 'Payroll Center v2 — ';
+class _PayrollCenterScreenState extends State<PayrollCenterScreen> with SingleTickerProviderStateMixin {
+  // ------------ Version label ------------
+  static const String _versionLabel = 'Payroll Center v1.0 — 2025-08-27';
 
-  // ====== Tabs ======
-  late final TabController _tab = TabController(length: 3, vsync: this);
+  // ------------ Controllers / State ------------
+  late TabController _tab;
 
-  // ====== User selection & search ======
   String? _selectedUserId;
-  String? _selectedUserName; // للعرض فقط
-  final _searchCtrl = TextEditingController();
+  Map<String, dynamic> _selectedUser = {};
 
-  // ====== Month selection (Monthly items) ======
-  DateTime _currentMonth =
-      DateTime(DateTime.now().year, DateTime.now().month, 1);
+  int _year = DateTime.now().year;
+  int _month = DateTime.now().month;
 
-  // ====== Controllers ======
-  final _baseCtrl = TextEditingController();
-  final _allowCtrl = TextEditingController();
-  final _bonusCtrl = TextEditingController();
-  final _otCtrl = TextEditingController();
-  final _deductCtrl = TextEditingController();
+  // Base salary (one-time; editable anytime)
+  final TextEditingController _baseSalaryCtrl = TextEditingController(text: '0');
 
-  // لمنع إعادة حقن البيانات أكثر من مرة
-  bool _seededSettings = false;
-  bool _seededMonth = false;
+  // Monthly items
+  final TextEditingController _allowancesCtrl = TextEditingController(text: '0');
+  final TextEditingController _deductionsCtrl = TextEditingController(text: '0');
+  final TextEditingController _bonusCtrl = TextEditingController(text: '0');
+  final TextEditingController _overtimeAmountCtrl = TextEditingController(text: '0');
 
-  // ====== Helpers: Firestore refs ======
-  CollectionReference<Map<String, dynamic>> get _usersCol =>
-      FirebaseFirestore.instance.collection('users');
+  // Loans (create form)
+  final TextEditingController _loanPrincipalCtrl = TextEditingController(text: '0');
+  final TextEditingController _loanPercentCtrl = TextEditingController(text: '10'); // % per month by default
+  DateTime _loanStart = DateTime(DateTime.now().year, DateTime.now().month, 1);
 
-  DocumentReference<Map<String, dynamic>> _settingsDoc(String uid) =>
-      FirebaseFirestore.instance
-          .collection('payroll')
-          .doc(uid)
-          .collection('settings')
-          .doc('current');
+  // Leave balances
+  final TextEditingController _annualQuotaCtrl = TextEditingController(text: '21');
+  final TextEditingController _carriedOverCtrl = TextEditingController(text: '0');
+  final TextEditingController _takenYTDCtrl = TextEditingController(text: '0');
+  final TextEditingController _manualAdjustCtrl = TextEditingController(text: '0'); // +/-
 
-  DocumentReference<Map<String, dynamic>> _monthDoc(
-          String uid, String yyyymm) =>
-      FirebaseFirestore.instance
-          .collection('payroll')
-          .doc(uid)
-          .collection('months')
-          .doc(yyyymm);
-
-  CollectionReference<Map<String, dynamic>> _loansCol(String uid) =>
-      FirebaseFirestore.instance
-          .collection('payroll')
-          .doc(uid)
-          .collection('loans');
-
-  // ====== Format / parse ======
-  final _numFormatter =
-      FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d{0,2}$'));
-
-  String _ym(DateTime d) =>
-      '${d.year}-${d.month.toString().padLeft(2, '0')}';
-
-  double _toNum(String? s) =>
-      double.tryParse((s ?? '').trim().isEmpty ? '0' : s!.trim()) ?? 0.0;
-
-  String _numTxt(dynamic v) {
-    if (v == null) return '0';
-    if (v is int) return v.toString();
-    if (v is double) return v.toStringAsFixed(2);
-    return double.tryParse(v.toString())?.toStringAsFixed(2) ?? '0';
+  // ------------ Utils ------------
+  double _toDouble(TextEditingController c) {
+    final s = c.text.trim().replaceAll(',', '');
+    final v = double.tryParse(s);
+    return v ?? 0.0;
   }
 
-  // ====== Action: change user ======
-  void _onPickUser(String uid, String displayName) {
-    setState(() {
-      _selectedUserId = uid;
-      _selectedUserName = displayName;
-
-      // صفّر كل الحقول وسييدنج
-      _seededSettings = false;
-      _seededMonth = false;
-
-      _baseCtrl.clear();
-      _allowCtrl.clear();
-      _bonusCtrl.clear();
-      _otCtrl.clear();
-      _deductCtrl.clear();
-
-      // ارجع الشهر الحالي
-      _currentMonth = DateTime(DateTime.now().year, DateTime.now().month, 1);
-    });
+  double _toDoubleAny(dynamic v) {
+    if (v is num) return v.toDouble();
+    if (v is String) return double.tryParse(v.replaceAll(',', '').trim()) ?? 0.0;
+    return 0.0;
   }
 
-  // ====== Month nav ======
-  void _shiftMonth(int delta) {
-    setState(() {
-      _currentMonth =
-          DateTime(_currentMonth.year, _currentMonth.month + delta, 1);
-      _seededMonth = false;
-      _bonusCtrl.clear();
-      _otCtrl.clear();
-      _deductCtrl.clear();
-    });
+  int _yyyymm(int year, int month) => (year * 100) + month;
+
+  String _yyyymmStr(int year, int month) =>
+      '\${year.toString()}-\${month.toString().padLeft(2, '0')}';
+
+  int _monthsBetweenInclusive(DateTime start, int y, int m) {
+    final target = DateTime(y, m);
+    int months = (target.year - start.year) * 12 + (target.month - start.month) + 1;
+    if (months < 0) months = 0;
+    return months;
   }
 
-  // ====== Save actions ======
-  Future<void> _saveSettings() async {
-    final uid = _selectedUserId;
-    if (uid == null) return;
+  // ------------ Firestore refs ------------
+  final _fs = FirebaseFirestore.instance;
 
-    final base = _toNum(_baseCtrl.text);
-    final allow = _toNum(_allowCtrl.text);
+  CollectionReference<Map<String, dynamic>> get _usersCol => _fs.collection('users');
+  DocumentReference<Map<String, dynamic>> _baseDoc(String uid) => _fs.collection('payroll_base').doc(uid);
+  DocumentReference<Map<String, dynamic>> _monthlyDoc(String uid, int y, int m) =>
+      _fs.collection('payroll_monthly').doc('\${uid}_\${y.toString()}-\${m.toString().padLeft(2, '0')}');
+  CollectionReference<Map<String, dynamic>> _loansCol() => _fs.collection('payroll_loans');
+  DocumentReference<Map<String, dynamic>> _leaveDoc(String uid) => _fs.collection('leave_balances').doc(uid);
 
-    await _settingsDoc(uid).set({
-      'salaryBase': base,
-      'allowances': allow,
+  // ------------ Loaders ------------
+  Future<void> _loadAllForUser(String uid) async {
+    // Base
+    final baseSnap = await _baseDoc(uid).get();
+    final base = baseSnap.data() ?? {};
+    _baseSalaryCtrl.text = _toDoubleAny(base['baseSalary']).toStringAsFixed(2);
+
+    // Monthly
+    final monSnap = await _monthlyDoc(uid, _year, _month).get();
+    final mon = monSnap.data() ?? {};
+    _allowancesCtrl.text = _toDoubleAny(mon['allowances']).toStringAsFixed(2);
+    _deductionsCtrl.text = _toDoubleAny(mon['deductions']).toStringAsFixed(2);
+    _bonusCtrl.text = _toDoubleAny(mon['bonus']).toStringAsFixed(2);
+    _overtimeAmountCtrl.text = _toDoubleAny(mon['overtimeAmount']).toStringAsFixed(2);
+
+    // Leave
+    final leaveSnap = await _leaveDoc(uid).get();
+    final lv = leaveSnap.data() ?? {};
+    _annualQuotaCtrl.text = (lv['annualQuota'] is num) ? (lv['annualQuota'] as num).toStringAsFixed(0) : (lv['annualQuota']?.toString() ?? '21');
+    _carriedOverCtrl.text = _toDoubleAny(lv['carriedOver']).toStringAsFixed(1);
+    _takenYTDCtrl.text = _toDoubleAny(lv['takenYTD']).toStringAsFixed(1);
+    _manualAdjustCtrl.text = _toDoubleAny(lv['manualAdjust']).toStringAsFixed(1);
+
+    setState(() {});
+  }
+
+  // ------------ Save actions ------------
+  Future<void> _saveBase() async {
+    if (_selectedUserId == null) return;
+    await _baseDoc(_selectedUserId!).set({
+      'baseSalary': _toDouble(_baseSalaryCtrl),
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
-
-    if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(const SnackBar(content: Text('Settings saved')));
+    _snack('Base salary saved');
   }
 
   Future<void> _saveMonthly() async {
-    final uid = _selectedUserId;
-    if (uid == null) return;
-
-    final key = _ym(_currentMonth);
-    final bonuses = _toNum(_bonusCtrl.text);
-    final ot = _toNum(_otCtrl.text);
-    final deducts = _toNum(_deductCtrl.text);
-
-    await _monthDoc(uid, key).set({
-      'bonuses': bonuses,
-      'overtimeAmount': ot,
-      'deductions': deducts,
+    if (_selectedUserId == null) return;
+    await _monthlyDoc(_selectedUserId!, _year, _month).set({
+      'allowances': _toDouble(_allowancesCtrl),
+      'deductions': _toDouble(_deductionsCtrl),
+      'bonus': _toDouble(_bonusCtrl),
+      'overtimeAmount': _toDouble(_overtimeAmountCtrl),
+      'year': _year,
+      'month': _month,
+      'userId': _selectedUserId,
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
-
-    if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(const SnackBar(content: Text('Monthly items saved')));
+    _snack('Monthly items saved for \${_yyyymmStr(_year, _month)}');
   }
 
-  // ====== Loans ======
-  Future<void> _addLoanDialog() async {
-    final uid = _selectedUserId;
-    if (uid == null) return;
-
-    final principalCtrl = TextEditingController();
-    final rateCtrl = TextEditingController(); // كنسبة مئوية من الأصل تُحسم شهرياً
-    final monthsCtrl = TextEditingController();
-    DateTime startMonth =
-        DateTime(_currentMonth.year, _currentMonth.month, 1);
-
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Add loan'),
-        content: SizedBox(
-          width: 380,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _numField('Principal amount', principalCtrl),
-              const SizedBox(height: 8),
-              _numField('Monthly % (of principal)', rateCtrl,
-                  hint: 'e.g. 10 for 10%'),
-              const SizedBox(height: 8),
-              _numField('Number of months', monthsCtrl, digitsOnly: true),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  const Text('Start month: '),
-                  const SizedBox(width: 6),
-                  FilledButton.tonal(
-                    onPressed: () async {
-                      final m = await showDatePicker(
-                        context: context,
-                        initialDate: startMonth,
-                        firstDate: DateTime(DateTime.now().year - 3),
-                        lastDate: DateTime(DateTime.now().year + 3),
-                        helpText: 'Pick any day in the start month',
-                      );
-                      if (m != null) {
-                        setState(() {
-                          startMonth = DateTime(m.year, m.month, 1);
-                        });
-                      }
-                    },
-                    child: Text(_ym(startMonth)),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Monthly deduction is computed automatically = principal × (rate% / 100). '
-                'Remaining amount reduces every month.',
-                style: TextStyle(fontSize: 12),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Add'),
-          ),
-        ],
-      ),
-    );
-
-    if (ok != true) return;
-
-    final principal = _toNum(principalCtrl.text);
-    final rate = _toNum(rateCtrl.text);
-    final months = int.tryParse(monthsCtrl.text.trim()) ?? 0;
-    if (principal <= 0 || rate <= 0 || months <= 0) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter valid principal, % and months')),
-      );
+  Future<void> _createLoan() async {
+    if (_selectedUserId == null) return;
+    final principal = _toDouble(_loanPrincipalCtrl);
+    final pct = _toDouble(_loanPercentCtrl);
+    if (principal <= 0 || pct <= 0) {
+      _snack('Enter principal and % > 0');
       return;
     }
-
-    await _loansCol(uid).add({
+    await _loansCol().add({
+      'userId': _selectedUserId,
       'principal': principal,
-      'monthlyRatePercent': rate,
-      'months': months,
-      'startMonth': _ym(startMonth),
+      'monthlyPercent': pct, // e.g., 10% of principal per month
+      'startYear': _loanStart.year,
+      'startMonth': _loanStart.month,
+      'isActive': true,
       'createdAt': FieldValue.serverTimestamp(),
-      'active': true,
     });
-
-    if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(const SnackBar(content: Text('Loan added')));
+    _loanPrincipalCtrl.text = '0';
+    _loanPercentCtrl.text = '10';
+    setState(() {});
+    _snack('Loan created');
   }
 
-  // حساب المتبقي للسلفة عند شهر معيّن
-  double _loanRemainingAtMonth(Map<String, dynamic> loan, DateTime atMonth) {
-    final principal = (loan['principal'] as num?)?.toDouble() ?? 0.0;
-    final rate = (loan['monthlyRatePercent'] as num?)?.toDouble() ?? 0.0;
-    final months = (loan['months'] as num?)?.toInt() ?? 0;
-    final start = loan['startMonth']?.toString() ?? _ym(DateTime.now());
-
-    if (principal <= 0 || rate <= 0 || months <= 0) return 0.0;
-
-    final startParts = start.split('-');
-    final startMonth = DateTime(
-      int.tryParse(startParts[0]) ?? DateTime.now().year,
-      int.tryParse(startParts[1]) ?? DateTime.now().month,
-      1,
-    );
-
-    // عدد الأشهر المنقضية
-    int elapsed =
-        (atMonth.year - startMonth.year) * 12 + (atMonth.month - startMonth.month) + 1;
-    if (elapsed < 0) elapsed = 0;
-    if (elapsed > months) elapsed = months;
-
-    final monthlyDeduct = principal * (rate / 100.0);
-    final deducted = monthlyDeduct * elapsed;
-    final remaining = (principal - deducted).clamp(0, double.infinity);
-    return remaining;
+  Future<void> _toggleLoanActive(String loanId, bool newVal) async {
+    await _loansCol().doc(loanId).set({
+      'isActive': newVal,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+    _snack(newVal ? 'Loan activated' : 'Loan deactivated');
   }
 
-  // ====== UI helpers ======
-  Widget _numField(String label, TextEditingController c,
-      {bool digitsOnly = false, String? hint}) {
-    return TextField(
-      controller: c,
-      keyboardType:
-          const TextInputType.numberWithOptions(decimal: true, signed: false),
-      inputFormatters: digitsOnly
-          ? [FilteringTextInputFormatter.digitsOnly]
-          : [_numFormatter],
-      decoration: InputDecoration(
-        labelText: label,
-        hintText: hint,
-        border: const OutlineInputBorder(),
-        isDense: true,
-      ),
-    );
+  Future<void> _saveLeave() async {
+    if (_selectedUserId == null) return;
+    await _leaveDoc(_selectedUserId!).set({
+      'annualQuota': int.tryParse(_annualQuotaCtrl.text.trim()) ?? 21,
+      'carriedOver': _toDouble(_carriedOverCtrl),
+      'takenYTD': _toDouble(_takenYTDCtrl),
+      'manualAdjust': _toDouble(_manualAdjustCtrl),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+    _snack('Leave balance saved');
   }
 
-  Widget _moneyField({
-    required String label,
-    required TextEditingController controller,
-    required bool enabled,
-    String? tooltip,
+  // ------------ Loan helpers ------------
+  double _loanMonthlyInstallment(double principal, double monthlyPercent) {
+    // simple percent of principal per month (no interest compounding)
+    return principal * (monthlyPercent / 100.0);
+  }
+
+  double _loanRemainingAtMonth({
+    required double principal,
+    required double monthlyPercent,
+    required DateTime start,
+    required int year,
+    required int month,
   }) {
-    final field = TextField(
-      enabled: enabled,
-      controller: controller,
-      keyboardType:
-          const TextInputType.numberWithOptions(decimal: true, signed: false),
-      inputFormatters: [_numFormatter],
-      decoration: InputDecoration(
-        labelText: label,
-        border: const OutlineInputBorder(),
-        isDense: true,
-        suffixIcon: tooltip == null
-            ? null
-            : Tooltip(message: tooltip, child: const Padding(
-                padding: EdgeInsets.all(10), child: Icon(Icons.info_outline))),
-      ),
-    );
-    return field;
+    final int monthsPaid = _monthsBetweenInclusive(start, year, month);
+    final double installment = _loanMonthlyInstallment(principal, monthlyPercent);
+    final num remaining = principal - (installment * monthsPaid);
+    return remaining.toDouble().clamp(0.0, principal);
   }
 
-  // ====== BUILD ======
+  // ------------ UI helpers ------------
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  List<DropdownMenuItem<int>> _monthItems() => List.generate(12, (i) {
+    final m = i + 1;
+    return DropdownMenuItem(value: m, child: Text(m.toString().padLeft(2, '0')));
+  });
+
+  List<DropdownMenuItem<int>> _yearItems() {
+    final now = DateTime.now().year;
+    final years = [for (int y = now - 2; y <= now + 2; y++) y];
+    return years.map((y) => DropdownMenuItem(value: y, child: Text(y.toString()))).toList();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _tab = TabController(length: 4, vsync: this);
+  }
+
+  @override
+  void dispose() {
+    _tab.dispose();
+    _baseSalaryCtrl.dispose();
+    _allowancesCtrl.dispose();
+    _deductionsCtrl.dispose();
+    _bonusCtrl.dispose();
+    _overtimeAmountCtrl.dispose();
+    _loanPrincipalCtrl.dispose();
+    _loanPercentCtrl.dispose();
+    _annualQuotaCtrl.dispose();
+    _carriedOverCtrl.dispose();
+    _takenYTDCtrl.dispose();
+    _manualAdjustCtrl.dispose();
+    super.dispose();
+  }
+
+  // Reset controllers when switching user or month
+  Future<void> _onUserOrPeriodChanged() async {
+    if (_selectedUserId == null) return;
+    await _loadAllForUser(_selectedUserId!);
+  }
+
+  // ------------ Widgets ------------
   @override
   Widget build(BuildContext context) {
-    final headerBadge =
-        '$_versionBadge ${DateTime.now().toLocal().toString().substring(0, 16)}';
-
-    final canEditSettings = _selectedUserId != null;
-    final canEditMonth = _selectedUserId != null; // الشهر موجود دائمًا بأسهم
-
-    final monthKey = _ym(_currentMonth);
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('Payroll Center'),
+        actions: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8.0),
+            child: Center(child: Text(_versionLabel, style: Theme.of(context).textTheme.labelMedium)),
+          ),
+        ],
         bottom: TabBar(
           controller: _tab,
           tabs: const [
-            Tab(text: 'Salaries'),
-            Tab(text: 'Leaves'),
+            Tab(text: 'Base Salary'),
+            Tab(text: 'Monthly Items'),
             Tab(text: 'Loans'),
+            Tab(text: 'Leave Balance'),
           ],
         ),
-        actions: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: Center(
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surfaceVariant,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Text(headerBadge, style: Theme.of(context).textTheme.labelMedium),
-              ),
-            ),
-          ),
-        ],
       ),
       body: Column(
         children: [
-          _userPickerBar(),
+          _headerFilters(),
           const Divider(height: 1),
           Expanded(
             child: TabBarView(
               controller: _tab,
               children: [
-                // ===== Salaries tab =====
-                SingleChildScrollView(
-                  padding: const EdgeInsets.all(12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Settings (base + allowances)
-                      Card(
-                        child: Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  const Text('Salary settings'),
-                                  const SizedBox(width: 6),
-                                  Tooltip(
-                                    message:
-                                        'Base & allowances are NOT monthly. You can update them any time.',
-                                    child: const Icon(Icons.info_outline, size: 18),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 10),
-                              StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-                                key: ValueKey('settings-$_selectedUserId'),
-                                stream: (_selectedUserId == null)
-                                    ? const Stream.empty()
-                                    : _settingsDoc(_selectedUserId!).snapshots(),
-                                builder: (context, snap) {
-                                  final data = snap.data?.data();
-                                  if (!_seededSettings &&
-                                      data != null &&
-                                      _selectedUserId != null) {
-                                    _baseCtrl.text =
-                                        _numTxt(data['salaryBase'] ?? 0);
-                                    _allowCtrl.text =
-                                        _numTxt(data['allowances'] ?? 0);
-                                    _seededSettings = true;
-                                  }
-                                  return Column(
-                                    children: [
-                                      Row(
-                                        children: [
-                                          Expanded(
-                                            child: _moneyField(
-                                              label: 'Base salary',
-                                              controller: _baseCtrl,
-                                              enabled: canEditSettings,
-                                              tooltip:
-                                                  'Fixed base salary (not monthly record).',
-                                            ),
-                                          ),
-                                          const SizedBox(width: 10),
-                                          Expanded(
-                                            child: _moneyField(
-                                              label: 'Allowances',
-                                              controller: _allowCtrl,
-                                              enabled: canEditSettings,
-                                              tooltip:
-                                                  'Sum of recurring allowances.',
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                      const SizedBox(height: 10),
-                                      Align(
-                                        alignment: Alignment.centerRight,
-                                        child: FilledButton.icon(
-                                          onPressed: canEditSettings
-                                              ? _saveSettings
-                                              : null,
-                                          icon: const Icon(Icons.save),
-                                          label: const Text('Save settings'),
-                                        ),
-                                      ),
-                                    ],
-                                  );
-                                },
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-
-                      // Monthly items
-                      const SizedBox(height: 12),
-                      Card(
-                        child: Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  IconButton(
-                                    tooltip: 'Previous month',
-                                    onPressed: canEditMonth ? () => _shiftMonth(-1) : null,
-                                    icon: const Icon(Icons.chevron_left),
-                                  ),
-                                  Text(
-                                    'Monthly items — $monthKey',
-                                    style: Theme.of(context).textTheme.titleMedium,
-                                  ),
-                                  IconButton(
-                                    tooltip: 'Next month',
-                                    onPressed: canEditMonth ? () => _shiftMonth(1) : null,
-                                    icon: const Icon(Icons.chevron_right),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  const Tooltip(
-                                    message:
-                                        'Monthly items are bonuses, overtime amount and deductions that apply only to this month.',
-                                    child: Icon(Icons.info_outline, size: 18),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 10),
-                              StreamBuilder<
-                                  DocumentSnapshot<Map<String, dynamic>>>(
-                                key: ValueKey(
-                                    'month-$_selectedUserId-$monthKey'),
-                                stream: (_selectedUserId == null)
-                                    ? const Stream.empty()
-                                    : _monthDoc(_selectedUserId!, monthKey)
-                                        .snapshots(),
-                                builder: (context, snap) {
-                                  final m = snap.data?.data();
-                                  if (!_seededMonth &&
-                                      m != null &&
-                                      _selectedUserId != null) {
-                                    _bonusCtrl.text =
-                                        _numTxt(m['bonuses'] ?? 0);
-                                    _otCtrl.text =
-                                        _numTxt(m['overtimeAmount'] ?? 0);
-                                    _deductCtrl.text =
-                                        _numTxt(m['deductions'] ?? 0);
-                                    _seededMonth = true;
-                                  }
-                                  return Column(
-                                    children: [
-                                      Row(
-                                        children: [
-                                          Expanded(
-                                            child: _moneyField(
-                                              label: 'Bonuses',
-                                              controller: _bonusCtrl,
-                                              enabled: canEditMonth,
-                                              tooltip:
-                                                  'One-off bonuses for $monthKey.',
-                                            ),
-                                          ),
-                                          const SizedBox(width: 10),
-                                          Expanded(
-                                            child: _moneyField(
-                                              label: 'Overtime amount',
-                                              controller: _otCtrl,
-                                              enabled: canEditMonth,
-                                              tooltip:
-                                                  'Total overtime value for $monthKey.',
-                                            ),
-                                          ),
-                                          const SizedBox(width: 10),
-                                          Expanded(
-                                            child: _moneyField(
-                                              label: 'Deductions',
-                                              controller: _deductCtrl,
-                                              enabled: canEditMonth,
-                                              tooltip:
-                                                  'Total deductions for $monthKey.',
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                      const SizedBox(height: 10),
-                                      Align(
-                                        alignment: Alignment.centerRight,
-                                        child: FilledButton.icon(
-                                          onPressed: canEditMonth
-                                              ? _saveMonthly
-                                              : null,
-                                          icon: const Icon(Icons.save_as),
-                                          label: const Text('Save monthly'),
-                                        ),
-                                      ),
-                                    ],
-                                  );
-                                },
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-
-                // ===== Leaves tab (placeholder حالياً) =====
-                Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: const [
-                      Icon(Icons.beach_access, size: 40),
-                      SizedBox(height: 8),
-                      Text('Leaves center coming soon.'),
-                    ],
-                  ),
-                ),
-
-                // ===== Loans tab =====
-                Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Row(
-                        children: [
-                          Text('Loans', style: Theme.of(context).textTheme.titleMedium),
-                          const SizedBox(width: 8),
-                          const Tooltip(
-                            message:
-                                'Monthly deduction = principal × (%/100). Remaining declines each month.',
-                            child: Icon(Icons.info_outline, size: 18),
-                          ),
-                          const Spacer(),
-                          FilledButton.icon(
-                            onPressed: _selectedUserId == null
-                                ? null
-                                : _addLoanDialog,
-                            icon: const Icon(Icons.add),
-                            label: const Text('Add loan'),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 10),
-                      Expanded(
-                        child: (_selectedUserId == null)
-                            ? const Center(child: Text('Pick a user to view loans'))
-                            : StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                                stream: _loansCol(_selectedUserId!)
-                                    .orderBy('createdAt', descending: true)
-                                    .snapshots(),
-                                builder: (context, snap) {
-                                  if (snap.connectionState ==
-                                      ConnectionState.waiting) {
-                                    return const Center(
-                                        child: CircularProgressIndicator());
-                                  }
-                                  final docs = snap.data?.docs ?? [];
-                                  if (docs.isEmpty) {
-                                    return const Center(
-                                        child: Text('No loans found'));
-                                  }
-                                  return ListView.separated(
-                                    itemCount: docs.length,
-                                    separatorBuilder: (_, __) =>
-                                        const SizedBox(height: 8),
-                                    itemBuilder: (_, i) {
-                                      final d = docs[i];
-                                      final m = d.data();
-                                      final principal =
-                                          (m['principal'] as num?)?.toDouble() ??
-                                              0.0;
-                                      final rate =
-                                          (m['monthlyRatePercent'] as num?)
-                                                  ?.toDouble() ??
-                                              0.0;
-                                      final months =
-                                          (m['months'] as num?)?.toInt() ?? 0;
-                                      final start = (m['startMonth'] ?? '')
-                                          .toString();
-                                      final remaining = _loanRemainingAtMonth(
-                                          m, _currentMonth);
-
-                                      return Card(
-                                        child: ListTile(
-                                          title: Text(
-                                              'Principal ${_numTxt(principal)} — ${_numTxt(rate)}% × $months mo'),
-                                          subtitle: Text(
-                                              'Start: $start • Remaining at ${_ym(_currentMonth)}: ${_numTxt(remaining)}'),
-                                          trailing: (m['active'] == true)
-                                              ? const Chip(
-                                                  label: Text('Active'),
-                                                  avatar: Icon(Icons.payments,
-                                                      size: 16),
-                                                )
-                                              : const Chip(
-                                                  label: Text('Closed'),
-                                                  avatar: Icon(Icons.done,
-                                                      size: 16),
-                                                ),
-                                        ),
-                                      );
-                                    },
-                                  );
-                                },
-                              ),
-                      ),
-                    ],
-                  ),
-                ),
+                _tabBaseSalary(),
+                _tabMonthlyItems(),
+                _tabLoans(),
+                _tabLeaveBalance(),
               ],
             ),
           ),
@@ -678,116 +279,423 @@ class _PayrollCenterScreenState extends State<PayrollCenterScreen>
     );
   }
 
-  // ====== User picker bar ======
-  Widget _userPickerBar() {
+  Widget _headerFilters() {
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Wrap(
+        spacing: 10,
+        runSpacing: 8,
+        crossAxisAlignment: WrapCrossAlignment.center,
         children: [
-          // Search
-          TextField(
-            controller: _searchCtrl,
-            onChanged: (_) => setState(() {}),
-            decoration: const InputDecoration(
-              prefixIcon: Icon(Icons.search),
-              hintText: 'Search user by name or email',
-              border: OutlineInputBorder(),
-            ),
-          ),
-          const SizedBox(height: 8),
-          // Users dropdown
+          // User selector
           StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-            stream: _usersCol
-                .where('status', isEqualTo: 'approved')
-                .orderBy('fullName')
-                .snapshots(),
-            builder: (context, snap) {
+            stream: _usersCol.where('status', isEqualTo: 'approved').orderBy('fullName').snapshots(),
+            builder: (context, s) {
               final items = <DropdownMenuItem<String>>[];
-              if (snap.hasData) {
-                final q = _searchCtrl.text.trim().toLowerCase();
-                final docs = snap.data!.docs.where((d) {
+              if (s.hasData) {
+                for (final d in s.data!.docs) {
                   final m = d.data();
-                  final name = (m['fullName'] ??
-                          m['name'] ??
-                          m['username'] ??
-                          '')
-                      .toString()
-                      .toLowerCase();
-                  final email = (m['email'] ?? '').toString().toLowerCase();
-                  return q.isEmpty || name.contains(q) || email.contains(q);
-                }).toList();
-
-                for (final d in docs) {
-                  final m = d.data();
-                  final name = (m['fullName'] ??
-                          m['name'] ??
-                          m['username'] ??
-                          d.id)
-                      .toString();
-                  final email = (m['email'] ?? '').toString();
-                  items.add(
-                    DropdownMenuItem(
-                      value: d.id,
-                      child: Row(
-                        children: [
-                          Text(name, overflow: TextOverflow.ellipsis),
-                          if (email.isNotEmpty) ...[
-                            const SizedBox(width: 8),
-                            Text('• $email',
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .bodySmall
-                                    ?.copyWith(color: Theme.of(context).hintColor)),
-                          ],
-                        ],
-                      ),
-                    ),
-                  );
+                  final name = (m['fullName'] ?? m['name'] ?? m['username'] ?? d.id).toString();
+                  items.add(DropdownMenuItem(value: d.id, child: Text(name)));
                 }
               }
-
               return InputDecorator(
                 decoration: const InputDecoration(
-                  labelText: 'Select user',
+                  labelText: 'User',
                   border: OutlineInputBorder(),
+                  isDense: true,
                 ),
                 child: DropdownButtonHideUnderline(
                   child: DropdownButton<String>(
                     value: _selectedUserId,
-                    isExpanded: true,
+                    isExpanded: false,
+                    hint: const Text('Select user'),
                     items: items,
-                    onChanged: (v) {
-                      if (v == null) return;
-                      final label = (items
-                              .firstWhere((e) => e.value == v)
-                              .child as Row)
-                          .children
-                          .whereType<Text>()
-                          .first
-                          .data!;
-                      _onPickUser(v, label);
+                    onChanged: (v) async {
+                      setState(() {
+                        _selectedUserId = v;
+                        _selectedUser = {};
+                      });
+                      if (v != null) {
+                        final doc = await _usersCol.doc(v).get();
+                        _selectedUser = doc.data() ?? {};
+                        await _onUserOrPeriodChanged();
+                      }
                     },
                   ),
                 ),
               );
             },
           ),
+
+          // Month / Year
+          InputDecorator(
+            decoration: const InputDecoration(
+              labelText: 'Month',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<int>(
+                value: _month,
+                items: _monthItems(),
+                onChanged: (v) async {
+                  setState(() => _month = v ?? _month);
+                  await _onUserOrPeriodChanged();
+                },
+              ),
+            ),
+          ),
+          InputDecorator(
+            decoration: const InputDecoration(
+              labelText: 'Year',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<int>(
+                value: _year,
+                items: _yearItems(),
+                onChanged: (v) async {
+                  setState(() => _year = v ?? _year);
+                  await _onUserOrPeriodChanged();
+                },
+              ),
+            ),
+          ),
         ],
       ),
     );
   }
 
-  // ====== Lifecycle ======
-  @override
-  void dispose() {
-    _tab.dispose();
-    _searchCtrl.dispose();
-    _baseCtrl.dispose();
-    _allowCtrl.dispose();
-    _bonusCtrl.dispose();
-    _otCtrl.dispose();
-    _deductCtrl.dispose();
-    super.dispose();
+  // -------- Tab 1: Base salary --------
+  Widget _tabBaseSalary() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _infoRow('Base salary', 'هذا هو الراتب الأساسي للموظف (مرة واحدة). يمكن تعديله في أي وقت لكنه لا يعتمد على الشهر.'),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _baseSalaryCtrl,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: InputDecoration(
+                    labelText: 'Base salary',
+                    border: const OutlineInputBorder(),
+                    suffixIcon: _helpIcon('يُدفَع شهريًا كأساس قبل الإضافات والخصومات.'),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              FilledButton.icon(
+                onPressed: _selectedUserId == null ? null : _saveBase,
+                icon: const Icon(Icons.save),
+                label: const Text('Save'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // -------- Tab 2: Monthly items --------
+  Widget _tabMonthlyItems() {
+    final double base = _toDouble(_baseSalaryCtrl);
+    final double allowances = _toDouble(_allowancesCtrl);
+    final double bonus = _toDouble(_bonusCtrl);
+    final double overtimeAmount = _toDouble(_overtimeAmountCtrl);
+    final double deductions = _toDouble(_deductionsCtrl);
+
+    final double total = base + allowances + bonus + overtimeAmount - deductions;
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Period: \${_yyyymmStr(_year, _month)}', style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 8),
+          Wrap(
+            runSpacing: 10,
+            spacing: 10,
+            children: [
+              _numberField(_allowancesCtrl, 'Allowances (this month)', 'قيمة العلاوات لهذا الشهر فقط.'),
+              _numberField(_bonusCtrl, 'Bonus (this month)', 'أي مكافأة تُصرف لهذا الشهر.'),
+              _numberField(_overtimeAmountCtrl, 'Overtime amount (this month)', 'قيمة الأوفر تايم لهذا الشهر (مبلغ نهائي).'),
+              _numberField(_deductionsCtrl, 'Deductions (this month)', 'خصومات هذا الشهر.'),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Card(
+            elevation: .5,
+            child: Padding(
+              padding: const EdgeInsets.all(12.0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('Total (base + month items)', style: TextStyle(fontWeight: FontWeight.bold)),
+                  Text(total.toStringAsFixed(2)),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.centerRight,
+            child: FilledButton.icon(
+              onPressed: _selectedUserId == null ? null : _saveMonthly,
+              icon: const Icon(Icons.save),
+              label: const Text('Save monthly items'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // -------- Tab 3: Loans --------
+  Widget _tabLoans() {
+    return Column(
+      children: [
+        // Create form
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _infoRow('Loans', 'أدخل سلفة/قرض مرة واحدة: أصل المبلغ + نسبة التقسيط الشهري (٪ من الأصل). الحسبة أوتوماتيك.'),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 10, runSpacing: 10,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  SizedBox(
+                    width: 200,
+                    child: TextField(
+                      controller: _loanPrincipalCtrl,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: InputDecoration(
+                        labelText: 'Principal',
+                        border: const OutlineInputBorder(),
+                        suffixIcon: _helpIcon('أصل المبلغ المسلّف.'),
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 200,
+                    child: TextField(
+                      controller: _loanPercentCtrl,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: InputDecoration(
+                        labelText: 'Monthly % of principal',
+                        border: const OutlineInputBorder(),
+                        suffixIcon: _helpIcon('نسبة تُخصم شهريًا من أصل المبلغ (ليس فائدة مركبة).'),
+                      ),
+                    ),
+                  ),
+                  InputDecorator(
+                    decoration: const InputDecoration(
+                      labelText: 'Start (month)',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                    child: InkWell(
+                      onTap: () async {
+                        final d = await showDatePicker(
+                          context: context,
+                          initialDate: _loanStart,
+                          firstDate: DateTime(DateTime.now().year - 3, 1, 1),
+                          lastDate: DateTime(DateTime.now().year + 3, 12, 31),
+                          helpText: 'Pick any date in the first month of loan',
+                        );
+                        if (d != null) setState(() => _loanStart = DateTime(d.year, d.month, 1));
+                      },
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                        child: Text(_yyyymmStr(_loanStart.year, _loanStart.month)),
+                      ),
+                    ),
+                  ),
+                  FilledButton.icon(
+                    onPressed: (_selectedUserId == null) ? null : _createLoan,
+                    icon: const Icon(Icons.add),
+                    label: const Text('Create loan'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const Divider(height: 20),
+        // List of loans
+        Expanded(
+          child: (_selectedUserId == null)
+              ? const Center(child: Text('Select a user to view loans'))
+              : StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                  stream: _loansCol()
+                      .where('userId', isEqualTo: _selectedUserId)
+                      .orderBy('createdAt', descending: true)
+                      .snapshots(),
+                  builder: (context, s) {
+                    if (s.connectionState == ConnectionState.waiting) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+                    final docs = s.data?.docs ?? [];
+                    if (docs.isEmpty) return const Center(child: Text('No loans found.'));
+                    return ListView.separated(
+                      padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
+                      itemCount: docs.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 8),
+                      itemBuilder: (_, i) {
+                        final d = docs[i];
+                        final m = d.data();
+                        final double principal = _toDoubleAny(m['principal']);
+                        final double pct = _toDoubleAny(m['monthlyPercent']);
+                        final int sy = (m['startYear'] ?? DateTime.now().year) as int;
+                        final int sm = (m['startMonth'] ?? DateTime.now().month) as int;
+                        final bool active = (m['isActive'] ?? true) == true;
+
+                        final remaining = _loanRemainingAtMonth(
+                          principal: principal,
+                          monthlyPercent: pct,
+                          start: DateTime(sy, sm, 1),
+                          year: _year, month: _month,
+                        );
+
+                        final monthlyInstallment = _loanMonthlyInstallment(principal, pct);
+
+                        return Card(
+                          child: ListTile(
+                            title: Text('Principal: ' + principal.toStringAsFixed(2) + ' — ' +
+                                'Monthly: ' + monthlyInstallment.toStringAsFixed(2) + ' (' + pct.toStringAsFixed(1) + '%)'),
+                            subtitle: Text('Start: ' + _yyyymmStr(sy, sm) +
+                                ' • Remaining @ ' + _yyyymmStr(_year, _month) + ': ' + remaining.toStringAsFixed(2)),
+                            trailing: Switch(
+                              value: active,
+                              onChanged: (v) => _toggleLoanActive(d.id, v),
+                            ),
+                          ),
+                        );
+                      },
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+
+  // -------- Tab 4: Leave Balance --------
+  Widget _tabLeaveBalance() {
+    final double carried = _toDouble(_carriedOverCtrl);
+    final double annual = double.tryParse(_annualQuotaCtrl.text.trim())?.toDouble() ?? 21.0;
+    final double taken = _toDouble(_takenYTDCtrl);
+    final double manual = _toDouble(_manualAdjustCtrl);
+    final double balance = (annual + carried + manual) - taken;
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _infoRow('Leave balance', 'تُخزَّن القيم هنا كمرجع إداري. لاحقًا سنربطها بطلبات الإجازة لتخصم/تزيد تلقائيًا.'),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 10, runSpacing: 10,
+            children: [
+              SizedBox(
+                width: 200,
+                child: TextField(
+                  controller: _annualQuotaCtrl,
+                  keyboardType: TextInputType.number,
+                  decoration: InputDecoration(
+                    labelText: 'Annual quota (days)',
+                    border: const OutlineInputBorder(),
+                    suffixIcon: _helpIcon('الإجمالي السنوي المسموح به من الأيام.'),
+                  ),
+                ),
+              ),
+              _numberField(_carriedOverCtrl, 'Carried over (days)', 'أيام مُرحّلة من سنة سابقة.'),
+              _numberField(_takenYTDCtrl, 'Taken YTD (days)', 'أيام تم أخذها منذ بداية السنة.'),
+              _numberField(_manualAdjustCtrl, 'Manual adjust (±days)', 'تصحيح يدوي يزيد/ينقص الرصيد.'),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Card(
+            elevation: .5,
+            child: Padding(
+              padding: const EdgeInsets.all(12.0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('Current balance (computed)', style: TextStyle(fontWeight: FontWeight.bold)),
+                  Text(balance.toStringAsFixed(1)),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.centerRight,
+            child: FilledButton.icon(
+              onPressed: _selectedUserId == null ? null : _saveLeave,
+              icon: const Icon(Icons.save),
+              label: const Text('Save leave balance'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // --------- Small UI helpers ----------
+  Widget _numberField(TextEditingController c, String label, String help) {
+    return SizedBox(
+      width: 220,
+      child: TextField(
+        controller: c,
+        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+        decoration: InputDecoration(
+          labelText: label,
+          border: const OutlineInputBorder(),
+          suffixIcon: _helpIcon(help),
+        ),
+        onChanged: (_) => setState(() {}),
+      ),
+    );
+  }
+
+  Widget _helpIcon(String message) {
+    return IconButton(
+      icon: const Icon(Icons.help_outline),
+      tooltip: 'Info',
+      onPressed: () {
+        showDialog(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: const Text('Info'),
+            content: Text(message),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _infoRow(String title, String desc) {
+    return Row(
+      children: [
+        Text(title, style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(width: 6),
+        _helpIcon(desc),
+      ],
+    );
   }
 }
