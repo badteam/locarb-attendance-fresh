@@ -59,7 +59,7 @@ class _PayrollCenterScreenState extends State<PayrollCenterScreen> with SingleTi
   int _yyyymm(int year, int month) => (year * 100) + month;
 
   String _yyyymmStr(int year, int month) =>
-      '\${year.toString()}-\${month.toString().padLeft(2, '0')}';
+    '${year.toString()}-${month.toString().padLeft(2, '0')}';
 
   int _monthsBetweenInclusive(DateTime start, int y, int m) {
     final target = DateTime(y, m);
@@ -74,7 +74,7 @@ class _PayrollCenterScreenState extends State<PayrollCenterScreen> with SingleTi
   CollectionReference<Map<String, dynamic>> get _usersCol => _fs.collection('users');
   DocumentReference<Map<String, dynamic>> _baseDoc(String uid) => _fs.collection('payroll_base').doc(uid);
   DocumentReference<Map<String, dynamic>> _monthlyDoc(String uid, int y, int m) =>
-      _fs.collection('payroll_monthly').doc('\${uid}_\${y.toString()}-\${m.toString().padLeft(2, '0')}');
+_fs.collection('payroll_monthly').doc('${uid}_${y.toString()}-${m.toString().padLeft(2, '0')}');
   CollectionReference<Map<String, dynamic>> _loansCol() => _fs.collection('payroll_loans');
   DocumentReference<Map<String, dynamic>> _leaveDoc(String uid) => _fs.collection('leave_balances').doc(uid);
 
