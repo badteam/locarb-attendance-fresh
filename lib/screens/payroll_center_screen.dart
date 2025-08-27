@@ -1,5 +1,5 @@
 // lib/screens/payroll_center_screen.dart
-// Payroll Center v1 — 2025-08-27 14:05
+// Payroll Center v2 — 2025-08-27 15:40
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
@@ -13,13 +13,38 @@ class PayrollCenterScreen extends StatefulWidget {
 
 class _PayrollCenterScreenState extends State<PayrollCenterScreen>
     with SingleTickerProviderStateMixin {
-  static const String _versionLabel = 'Payroll Center v1 — 2025-08-27 14:05';
+  static const String _versionLabel = 'Payroll Center v2 — 2025-08-27 15:40';
 
   late TabController _tab;
   String? _selectedUserId;
   String _search = '';
 
+  // الشهر الحالي (مفتاح بصيغة YYYY-MM)
+  late String _monthKey;
+
+  @override
+  void initState() {
+    super.initState();
+    _tab = TabController(length: 3, vsync: this);
+    final now = DateTime.now();
+    _monthKey = _fmtMonthKey(now);
+  }
+
+  @override
+  void dispose() {
+    _tab.dispose();
+    super.dispose();
+  }
+
   // ===== Utils =====
+  String _fmtMonthKey(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}';
+
+  DateTime _parseMonthKey(String mk) {
+    final p = mk.split('-');
+    return DateTime(int.parse(p[0]), int.parse(p[1]));
+  }
+
   String _numTxt(dynamic v) {
     if (v is num) return v is int ? v.toString() : v.toStringAsFixed(2);
     final d = double.tryParse(v.toString()) ?? 0;
@@ -38,36 +63,7 @@ class _PayrollCenterScreenState extends State<PayrollCenterScreen>
     return null;
   }
 
-  @override
-  void initState() {
-    super.initState();
-    _tab = TabController(length: 3, vsync: this);
-  }
-
-  @override
-  void dispose() {
-    _tab.dispose();
-    super.dispose();
-  }
-
-  // ===== Firestore refs =====
-  final _fs = FirebaseFirestore.instance;
-
-  Stream<List<QueryDocumentSnapshot<Map<String, dynamic>>>> _usersStream() {
-    // نجيب كل المستخدمين ونفلتر بالبحث client-side لتفادي الاندكسات
-    return _fs.collection('users').orderBy('fullName', descending: false).snapshots().map(
-      (s) => s.docs.where((d) {
-        final m = d.data();
-        final name = (m['fullName'] ?? m['name'] ?? m['username'] ?? '').toString().toLowerCase();
-        final email = (m['email'] ?? '').toString().toLowerCase();
-        final q = _search.trim().toLowerCase();
-        if (q.isEmpty) return true;
-        return name.contains(q) || email.contains(q);
-      }).toList(),
-    );
-  }
-
-  // =============== UI helpers ===============
+  // تولتيب + Dialog ⓘ
   Widget _withInfo({
     required String label,
     required Widget field,
@@ -103,20 +99,35 @@ class _PayrollCenterScreenState extends State<PayrollCenterScreen>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            Text(label),
-            const SizedBox(width: 6),
-            icon,
-          ],
-        ),
+        Row(children: [
+          Text(label),
+          const SizedBox(width: 6),
+          icon,
+        ]),
         const SizedBox(height: 6),
         field,
       ],
     );
   }
 
-  // =============== BUILD ===============
+  // ===== Firestore =====
+  final _fs = FirebaseFirestore.instance;
+
+  Stream<List<QueryDocumentSnapshot<Map<String, dynamic>>>> _usersStream() {
+    // نجيب كل المستخدمين ونفلتر بالبحث client-side
+    return _fs.collection('users').orderBy('fullName', descending: false).snapshots().map(
+      (s) => s.docs.where((d) {
+        final m = d.data();
+        final name = (m['fullName'] ?? m['name'] ?? m['username'] ?? '').toString().toLowerCase();
+        final email = (m['email'] ?? '').toString().toLowerCase();
+        final q = _search.trim().toLowerCase();
+        if (q.isEmpty) return true;
+        return name.contains(q) || email.contains(q);
+      }).toList(),
+    );
+  }
+
+  // ===== BUILD =====
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -226,138 +237,248 @@ class _PayrollCenterScreenState extends State<PayrollCenterScreen>
     );
   }
 
-  // ===== Salaries Tab =====
-  Widget _salariesTab(String uid) {
-    final docRef = _fs.collection('payroll').doc(uid).collection('settings').doc('current');
-    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: docRef.snapshots(),
-      builder: (context, s) {
-        final m = s.data?.data() ?? {};
-        final baseCtrl = TextEditingController(text: _numTxt(m['salaryBase'] ?? 0));
-        final allowanceCtrl = TextEditingController(text: _numTxt(m['allowances'] ?? 0));
-        final bonusCtrl = TextEditingController(text: _numTxt(m['bonuses'] ?? 0));
-        final deductionsCtrl = TextEditingController(text: _numTxt(m['deductions'] ?? 0));
-        final overtimeCtrl = TextEditingController(text: _numTxt(m['overtimeAmount'] ?? 0));
+  // ===== Month picker row for Salaries tab =====
+  Widget _monthPickerRow() {
+    // نعرض آخر 18 شهرًا في الدروب داون
+    final now = DateTime.now();
+    final months = <String>[];
+    for (int i = 0; i < 18; i++) {
+      final d = DateTime(now.year, now.month - i);
+      months.add(_fmtMonthKey(d));
+    }
 
-        final base = _toDouble(baseCtrl.text);
-        final allow = _toDouble(allowanceCtrl.text);
-        final bonus = _toDouble(bonusCtrl.text);
-        final ot = _toDouble(overtimeCtrl.text);
-        final ded = _toDouble(deductionsCtrl.text);
-        final total = base + allow + bonus + ot - ded;
+    void prev() {
+      final d = _parseMonthKey(_monthKey);
+      final p = DateTime(d.year, d.month - 1);
+      setState(() => _monthKey = _fmtMonthKey(p));
+    }
 
-        Future<void> _save() async {
-          await docRef.set({
-            'salaryBase': _toDouble(baseCtrl.text),
-            'allowances': _toDouble(allowanceCtrl.text),
-            'bonuses': _toDouble(bonusCtrl.text),
-            'overtimeAmount': _toDouble(overtimeCtrl.text),
-            'deductions': _toDouble(deductionsCtrl.text),
-            'updatedAt': FieldValue.serverTimestamp(),
-          }, SetOptions(merge: true));
-          if (context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Salaries saved')));
-          }
-        }
+    void next() {
+      final d = _parseMonthKey(_monthKey);
+      final n = DateTime(d.year, d.month + 1);
+      setState(() => _monthKey = _fmtMonthKey(n));
+    }
 
-        return SingleChildScrollView(
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Wrap(
-                spacing: 12,
-                runSpacing: 12,
-                children: [
-                  SizedBox(
-                    width: 220,
-                    child: _withInfo(
-                      label: 'Base salary',
-                      tooltip: 'الراتب الثابت الشهري',
-                      field: TextField(
-                        controller: baseCtrl,
-                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                        decoration: const InputDecoration(isDense: true, border: OutlineInputBorder()),
-                        onChanged: (_) => setState(() {}),
-                      ),
-                    ),
-                  ),
-                  SizedBox(
-                    width: 220,
-                    child: _withInfo(
-                      label: 'Allowances',
-                      tooltip: 'بدلات/علاوات ثابتة',
-                      field: TextField(
-                        controller: allowanceCtrl,
-                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                        decoration: const InputDecoration(isDense: true, border: OutlineInputBorder()),
-                        onChanged: (_) => setState(() {}),
-                      ),
-                    ),
-                  ),
-                  SizedBox(
-                    width: 220,
-                    child: _withInfo(
-                      label: 'Bonuses',
-                      tooltip: 'مكافآت إضافية',
-                      field: TextField(
-                        controller: bonusCtrl,
-                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                        decoration: const InputDecoration(isDense: true, border: OutlineInputBorder()),
-                        onChanged: (_) => setState(() {}),
-                      ),
-                    ),
-                  ),
-                  SizedBox(
-                    width: 220,
-                    child: _withInfo(
-                      label: 'Overtime amount',
-                      tooltip: 'قيمة الأوفر تايم لهذا الشهر (إدخال يدوي)',
-                      field: TextField(
-                        controller: overtimeCtrl,
-                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                        decoration: const InputDecoration(isDense: true, border: OutlineInputBorder()),
-                        onChanged: (_) => setState(() {}),
-                      ),
-                    ),
-                  ),
-                  SizedBox(
-                    width: 220,
-                    child: _withInfo(
-                      label: 'Deductions',
-                      tooltip: 'خصومات الشهر',
-                      field: TextField(
-                        controller: deductionsCtrl,
-                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                        decoration: const InputDecoration(isDense: true, border: OutlineInputBorder()),
-                        onChanged: (_) => setState(() {}),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              Card(
-                elevation: .3,
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Wrap(
-                    spacing: 16, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      Text('Preview total: ${_numTxt(total)}', style: Theme.of(context).textTheme.titleMedium),
-                      FilledButton.icon(onPressed: _save, icon: const Icon(Icons.save), label: const Text('Save')),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
-        );
-      },
+    return Card(
+      margin: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        child: Wrap(
+          spacing: 10,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            IconButton(onPressed: prev, icon: const Icon(Icons.chevron_left)),
+            DropdownButton<String>(
+              value: _monthKey,
+              items: months.map((m) => DropdownMenuItem(value: m, child: Text(m))).toList(),
+              onChanged: (v) => setState(() => _monthKey = v ?? _monthKey),
+            ),
+            IconButton(onPressed: next, icon: const Icon(Icons.chevron_right)),
+            const SizedBox(width: 8),
+            const Text('Select month for monthly items (Bonuses / OT / Deductions)'),
+          ],
+        ),
+      ),
     );
   }
 
-  // ===== Leaves Tab =====
+  // ===== Salaries Tab =====
+  Widget _salariesTab(String uid) {
+    final settingsRef = _fs.collection('payroll').doc(uid).collection('settings').doc('current');
+    final monthRef = _fs.collection('payroll').doc(uid).collection('months').doc(_monthKey);
+
+    return Column(
+      children: [
+        _monthPickerRow(),
+        Expanded(
+          child: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+            stream: settingsRef.snapshots(),
+            builder: (context, sSettings) {
+              final ms = sSettings.data?.data() ?? {};
+              final baseCtrl = TextEditingController(text: _numTxt(ms['salaryBase'] ?? 0));
+              final allowanceCtrl = TextEditingController(text: _numTxt(ms['allowances'] ?? 0));
+
+              final base = _toDouble(baseCtrl.text);
+              final allow = _toDouble(allowanceCtrl.text);
+
+              return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                stream: monthRef.snapshots(),
+                builder: (context, sMonth) {
+                  final mm = sMonth.data?.data() ?? {};
+                  final bonusCtrl = TextEditingController(text: _numTxt(mm['bonuses'] ?? 0));
+                  final overtimeCtrl = TextEditingController(text: _numTxt(mm['overtimeAmount'] ?? 0));
+                  final deductionsCtrl = TextEditingController(text: _numTxt(mm['deductions'] ?? 0));
+
+                  final bonus = _toDouble(bonusCtrl.text);
+                  final ot = _toDouble(overtimeCtrl.text);
+                  final ded = _toDouble(deductionsCtrl.text);
+
+                  final monthTotal = base + allow + bonus + ot - ded;
+
+                  Future<void> _saveSettings() async {
+                    await settingsRef.set({
+                      'salaryBase': _toDouble(baseCtrl.text),
+                      'allowances': _toDouble(allowanceCtrl.text),
+                      'updatedAt': FieldValue.serverTimestamp(),
+                    }, SetOptions(merge: true));
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Settings saved')));
+                    }
+                  }
+
+                  Future<void> _saveMonth() async {
+                    await monthRef.set({
+                      'bonuses': _toDouble(bonusCtrl.text),
+                      'overtimeAmount': _toDouble(overtimeCtrl.text),
+                      'deductions': _toDouble(deductionsCtrl.text),
+                      'monthKey': _monthKey,
+                      'updatedAt': FieldValue.serverTimestamp(),
+                    }, SetOptions(merge: true));
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved for month $_monthKey')));
+                    }
+                  }
+
+                  return SingleChildScrollView(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // ===== Settings (once) =====
+                        Text('Settings (one-time)', style: Theme.of(context).textTheme.titleMedium),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 12, runSpacing: 12,
+                          children: [
+                            SizedBox(
+                              width: 240,
+                              child: _withInfo(
+                                label: 'Base salary',
+                                tooltip: 'الراتب الثابت الشهري — يُعدل عند الحاجة فقط',
+                                field: TextField(
+                                  controller: baseCtrl,
+                                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                  decoration: const InputDecoration(isDense: true, border: OutlineInputBorder()),
+                                  onChanged: (_) => setState(() {}),
+                                ),
+                              ),
+                            ),
+                            SizedBox(
+                              width: 240,
+                              child: _withInfo(
+                                label: 'Allowances',
+                                tooltip: 'بدلات/علاوات ثابتة — تُعدل عند الحاجة فقط',
+                                field: TextField(
+                                  controller: allowanceCtrl,
+                                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                  decoration: const InputDecoration(isDense: true, border: OutlineInputBorder()),
+                                  onChanged: (_) => setState(() {}),
+                                ),
+                              ),
+                            ),
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: FilledButton.icon(
+                                onPressed: _saveSettings,
+                                icon: const Icon(Icons.save),
+                                label: const Text('Save settings'),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 18),
+                        const Divider(),
+                        const SizedBox(height: 12),
+
+                        // ===== Monthly (per month) =====
+                        Text('Monthly items for $_monthKey', style: Theme.of(context).textTheme.titleMedium),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 12, runSpacing: 12,
+                          children: [
+                            SizedBox(
+                              width: 220,
+                              child: _withInfo(
+                                label: 'Bonuses',
+                                tooltip: 'مكافآت هذا الشهر',
+                                field: TextField(
+                                  controller: bonusCtrl,
+                                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                  decoration: const InputDecoration(isDense: true, border: OutlineInputBorder()),
+                                  onChanged: (_) => setState(() {}),
+                                ),
+                              ),
+                            ),
+                            SizedBox(
+                              width: 220,
+                              child: _withInfo(
+                                label: 'Overtime amount',
+                                tooltip: 'قيمة الأوفر تايم لهذا الشهر',
+                                field: TextField(
+                                  controller: overtimeCtrl,
+                                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                  decoration: const InputDecoration(isDense: true, border: OutlineInputBorder()),
+                                  onChanged: (_) => setState(() {}),
+                                ),
+                              ),
+                            ),
+                            SizedBox(
+                              width: 220,
+                              child: _withInfo(
+                                label: 'Deductions',
+                                tooltip: 'خصومات هذا الشهر',
+                                field: TextField(
+                                  controller: deductionsCtrl,
+                                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                  decoration: const InputDecoration(isDense: true, border: OutlineInputBorder()),
+                                  onChanged: (_) => setState(() {}),
+                                ),
+                              ),
+                            ),
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: FilledButton.icon(
+                                onPressed: _saveMonth,
+                                icon: const Icon(Icons.save),
+                                label: Text('Save for $_monthKey'),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                        Card(
+                          elevation: .3,
+                          child: Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: Wrap(
+                              spacing: 16,
+                              runSpacing: 8,
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              children: [
+                                Chip(label: Text('Base: ${_numTxt(base)}')),
+                                Chip(label: Text('Allowances: ${_numTxt(allow)}')),
+                                Chip(label: Text('Bonuses ($_monthKey): ${_numTxt(bonus)}')),
+                                Chip(label: Text('OT ($_monthKey): ${_numTxt(ot)}')),
+                                Chip(label: Text('Deductions ($_monthKey): ${_numTxt(ded)}')),
+                                Text('Monthly total ($_monthKey): ${_numTxt(monthTotal)}',
+                                    style: Theme.of(context).textTheme.titleMedium),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ===== Leaves Tab (كما هي) =====
   Widget _leavesTab(String uid) {
     final docRef = _fs.collection('leave_balances').doc(uid);
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
@@ -479,7 +600,7 @@ class _PayrollCenterScreenState extends State<PayrollCenterScreen>
     );
   }
 
-  // ===== Loans Tab =====
+  // ===== Loans Tab (كما كانت v1) =====
   Widget _loansTab(String uid) {
     final loansCol = _fs.collection('payroll').doc(uid).collection('loans').orderBy('createdAt', descending: true);
 
@@ -487,16 +608,6 @@ class _PayrollCenterScreenState extends State<PayrollCenterScreen>
       stream: loansCol.snapshots(),
       builder: (context, s) {
         final loanDocs = s.data?.docs ?? [];
-
-        String? selectedLoanId;
-        if (loanDocs.isNotEmpty) {
-          // اختار أول قرض Active أو أول عنصر
-          final active = loanDocs.firstWhere(
-            (d) => (d.data()['status'] ?? 'active') == 'active',
-            orElse: () => loanDocs.first,
-          );
-          selectedLoanId = active.id;
-        }
 
         return Padding(
           padding: const EdgeInsets.all(12),
@@ -514,7 +625,7 @@ class _PayrollCenterScreenState extends State<PayrollCenterScreen>
                       final loanRef = _fs.collection('payroll').doc(uid).collection('loans').doc();
                       await loanRef.set({
                         'principal': 0.0,
-                        'monthlyPercent': 10.0, // مثال افتراضي
+                        'monthlyPercent': 10.0,
                         'paidAmount': 0.0,
                         'startDate': Timestamp.fromDate(DateTime(now.year, now.month, now.day)),
                         'status': 'active', // active | paid
@@ -526,25 +637,6 @@ class _PayrollCenterScreenState extends State<PayrollCenterScreen>
                     icon: const Icon(Icons.add),
                     label: const Text('Add loan'),
                   ),
-                  if (loanDocs.isNotEmpty)
-                    DropdownButton<String>(
-                      value: selectedLoanId,
-                      items: loanDocs.map((d) {
-                        final m = d.data();
-                        final pr = (m['principal'] ?? 0).toString();
-                        final st = (m['status'] ?? 'active').toString();
-                        return DropdownMenuItem(
-                          value: d.id,
-                          child: Text('Loan ${d.id.substring(0, 6)} — $pr — $st'),
-                        );
-                      }).toList(),
-                      onChanged: (v) {
-                        // مجرد إعادة بناء لعرض قرض آخر
-                        setState(() {
-                          // nothing persistent; سنعيد بناء via Stream below with chosen id
-                        });
-                      },
-                    ),
                 ],
               ),
               const SizedBox(height: 12),
@@ -561,7 +653,6 @@ class _PayrollCenterScreenState extends State<PayrollCenterScreen>
   }
 
   Widget _loanDetails(String uid, List<QueryDocumentSnapshot<Map<String, dynamic>>> loanDocs) {
-    // نعرض كاروسيل بطاقات القروض (الأحدث أولًا)
     return ListView.separated(
       itemCount: loanDocs.length,
       separatorBuilder: (_, __) => const SizedBox(height: 10),
