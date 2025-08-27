@@ -7,6 +7,8 @@ import '../screens/attendance_report_screen.dart';
 import '../screens/admin_users_screen.dart';
 import '../screens/branches_shifts_screen.dart';
 import '../screens/payroll_loan_assistant.dart';
+import '../screens/payroll_center_screen.dart';
+
 
 
 // Admin tools (اتأكد إن الملفات دي موجودة)
@@ -132,6 +134,12 @@ class _MainDrawerState extends State<MainDrawer> {
   onTap: () => _open(const PayrollLoanAssistantScreen()),
 ),
 
+                  ListTile(
+  leading: const Icon(Icons.payments_outlined),
+  title: const Text('Payroll Center'),
+  subtitle: const Text('Salaries, leaves & loans'),
+  onTap: () => _open(const PayrollCenterScreen()),
+),
                   _section('Settings'),
                   SwitchListTile(
                     secondary: const Icon(Icons.dark_mode_outlined),
